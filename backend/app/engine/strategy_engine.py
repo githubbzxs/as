@@ -6,7 +6,7 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.engine.adaptive import AdaptiveController
 from app.engine.as_model import AsMarketMakerModel
@@ -74,12 +74,12 @@ class StrategyEngine:
         self._consecutive_failures = 0
 
         cfg = self._config_store.get()
-        self._mode = "readonly"
-        self._readonly_until = utcnow() + timedelta(seconds=cfg.recovery_readonly_sec)
+        self._mode = "running"
+        self._readonly_until = None
 
         self._task = asyncio.create_task(self._run_loop(), name="strategy-engine-loop")
         await self._event_bus.publish("engine", {"status": "started", "mode": self._mode})
-        await self._alert.send("Engine", "做市引擎已启动，进入只读预热阶段")
+        await self._alert.send("Engine", "做市引擎已启动，开始自动做市")
         return self._mode
 
     async def stop(self, reason: str = "manual") -> str:
@@ -198,10 +198,6 @@ class StrategyEngine:
                     quote_size_notional=quote_notional,
                 )
                 self._post_only_guard(market.bid, market.ask, decision)
-
-                if self._mode == "readonly" and self._readonly_until and utcnow() >= self._readonly_until:
-                    self._mode = "running"
-                    await self._alert.send("Engine", "只读预热结束，开始自动做市")
 
                 sync_result = SyncResult(requoted=False, reason="none")
                 if self._mode == "running":

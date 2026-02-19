@@ -499,54 +499,6 @@ export default function App() {
         <LineChart title="Ask Distance(bps)" points={series.distance_ask_bps} color="#7c3aed" />
       </section>
 
-      <section className="diagnostics-grid">
-        <div className="panel diagnostics-panel">
-          <h2>成交诊断</h2>
-          <div className="diagnostics-list">
-            <div>
-              <span>重报价原因</span>
-              <strong>{summary?.requote_reason || "-"}</strong>
-            </div>
-            <div>
-              <span>Bid 距盘口 (bps)</span>
-              <strong>{fmt(summary?.distance_bid_bps, 3)}</strong>
-            </div>
-            <div>
-              <span>Ask 距盘口 (bps)</span>
-              <strong>{fmt(summary?.distance_ask_bps, 3)}</strong>
-            </div>
-            <div>
-              <span>1分钟成交数</span>
-              <strong>{fmt(summary?.maker_fill_count_1m, 0)}</strong>
-            </div>
-            <div>
-              <span>1分钟撤单数</span>
-              <strong>{fmt(summary?.cancel_count_1m, 0)}</strong>
-            </div>
-            <div>
-              <span>成交撤单比</span>
-              <strong>{fmt(summary?.fill_to_cancel_ratio, 3)}</strong>
-            </div>
-            <div>
-              <span>在簿时长 P50(s)</span>
-              <strong>{fmt(summary?.time_in_book_p50_sec, 2)}</strong>
-            </div>
-            <div>
-              <span>在簿时长 P90(s)</span>
-              <strong>{fmt(summary?.time_in_book_p90_sec, 2)}</strong>
-            </div>
-            <div>
-              <span>买单最长在簿(s)</span>
-              <strong>{fmt(summary?.open_order_age_buy_sec, 2)}</strong>
-            </div>
-            <div>
-              <span>卖单最长在簿(s)</span>
-              <strong>{fmt(summary?.open_order_age_sell_sec, 2)}</strong>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <section className="panel-grid">
         <div className="panel">
           <h2>自动参数（仅三旋钮）</h2>

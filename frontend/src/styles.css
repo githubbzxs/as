@@ -123,41 +123,6 @@ button {
   gap: 10px;
 }
 
-.diagnostics-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-}
-
-.diagnostics-panel {
-  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
-}
-
-.diagnostics-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 8px;
-}
-
-.diagnostics-list div {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: #fff;
-}
-
-.diagnostics-list span {
-  color: var(--sub);
-  font-size: 12px;
-}
-
-.diagnostics-list strong {
-  font-size: 15px;
-}
-
 .chart-card {
   background: var(--panel);
   border: 1px solid var(--border);

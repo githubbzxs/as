@@ -27,6 +27,14 @@
 - **[2026-02-19] 成交诊断指标落地**：监控摘要新增盘口距离、1分钟成交/撤单、在簿时长分位数、重报价原因，并新增对应时序曲线。
   - Impact：`backend/app/schemas.py`、`backend/app/services/monitoring.py`、`backend/app/engine/strategy_engine.py`、`frontend/src/App.jsx`
 
+- **[2026-02-19] 启动挂单行为更新**：引擎启动后不再经过 readonly 预热，直接进入 running 并执行挂单同步。
+  - Why：避免启动后长时间“看起来无挂单”，缩短到首轮有效挂单的时间。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_startup.py`
+
+- **[2026-02-19] 成交诊断展示调整**：前端已移除“成交诊断”面板，仅保留核心运行卡片、曲线与订单/成交表。
+  - Why：按产品要求简化界面，降低非必要诊断噪声。
+  - Impact：`frontend/src/App.jsx`、`frontend/src/styles.css`
+
 ## Decisions
 
 - **[2026-02-19] 策略框架**：采用 Avellaneda-Stoikov + 基础自适应（波动率/深度/成交强度）。
@@ -57,6 +65,10 @@
   - Why：规避 `event_time` 缺失与 `invalid literal for int()` 导致的主循环异常。
   - Impact：`backend/app/exchange/grvt_live.py`、`backend/app/engine/strategy_engine.py`
 
+- **[2026-02-19] 做市启动节奏调整**：从“启动只读预热后再挂单”调整为“启动即进入 running 并挂单”。
+  - Why：优先保证持续挂单可用性，符合“AS 模型应持续在簿报价”的产品预期。
+  - Impact：`backend/app/engine/strategy_engine.py`
+
 ## Commands
 
 - **[2026-02-19] 后端启动**：`cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload`
@@ -79,6 +91,9 @@
 
 - **[2026-02-19] 当前状态（成交优化）**：已完成成交优先改造（策略映射、运行参数、适配容错、诊断面板），后端测试 `28 passed`，前端构建通过。
   - Next：在实盘连续运行 10-15 分钟观察 `maker_fill_count_1m/cancel_count_1m/fill_to_cancel_ratio` 并按诊断值二次微调价差上限。
+
+- **[2026-02-19] 当前状态（挂单优先）**：已完成“启动即挂单”改造与前端成交诊断面板下线，新增启动与下单双测例保障行为稳定。
+  - Next：在实盘观察启动后首轮挂单时间与 5-10 分钟成交节奏，若仍偏慢再评估参数窗口而非重引擎流程。
 
 ## Known Issues
 
