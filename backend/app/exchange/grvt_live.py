@@ -19,13 +19,27 @@ class GrvtLiveAdapter(ExchangeAdapter):
 
     FIXED_SCALE = 1_000_000_000
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        grvt_env: str | None = None,
+        grvt_api_key: str | None = None,
+        grvt_api_secret: str | None = None,
+        grvt_trading_account_id: str | None = None,
+    ) -> None:
         self._settings = settings
         self._logger = logging.getLogger("grvt.live")
+        self._grvt_env = settings.grvt_env if grvt_env is None else grvt_env
+        self._grvt_api_key = settings.grvt_api_key if grvt_api_key is None else grvt_api_key
+        self._grvt_api_secret = settings.grvt_api_secret if grvt_api_secret is None else grvt_api_secret
+        self._grvt_trading_account_id = (
+            settings.grvt_trading_account_id if grvt_trading_account_id is None else grvt_trading_account_id
+        )
 
     @cached_property
     def _client(self) -> GrvtCcxt:
-        env_raw = str(self._settings.grvt_env).lower()
+        env_raw = str(self._grvt_env).lower()
         env_map = {
             "prod": GrvtEnv.PROD,
             "production": GrvtEnv.PROD,
@@ -35,9 +49,9 @@ class GrvtLiveAdapter(ExchangeAdapter):
         }
         env = env_map.get(env_raw, GrvtEnv.TESTNET)
         params = {
-            "api_key": self._settings.grvt_api_key,
-            "private_key": self._settings.grvt_api_secret,
-            "trading_account_id": self._settings.grvt_trading_account_id,
+            "api_key": self._grvt_api_key,
+            "private_key": self._grvt_api_secret,
+            "trading_account_id": self._grvt_trading_account_id,
         }
         return GrvtCcxt(env=env, parameters=params, order_book_ccxt_format=True)
 

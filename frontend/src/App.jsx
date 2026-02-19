@@ -1,22 +1,49 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  fetchExchangeConfig,
   fetchMetrics,
   fetchOpenOrders,
   fetchRecentTrades,
-  fetchRuntimeConfig,
+  fetchRuntimeProfile,
   fetchSecretsStatus,
   fetchStatus,
   login,
   startEngine,
   stopEngine,
-  updateRuntimeConfig,
+  updateExchangeConfig,
+  updateRuntimeProfile,
 } from "./api";
 
 const initialLogin = { username: "admin", password: "" };
 
+const profileFieldMeta = [
+  {
+    key: "aggressiveness",
+    label: "做市激进度",
+    hint: "越高越积极，价差更紧、刷新更快。",
+  },
+  {
+    key: "inventory_tolerance",
+    label: "库存容忍度",
+    hint: "越高越允许持仓波动，挂单名义上限更大。",
+  },
+  {
+    key: "risk_threshold",
+    label: "风险阈值",
+    hint: "越高越宽松，熔断阈值更高、只读恢复更快。",
+  },
+];
+
 function fmt(value, digits = 4) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(digits);
+}
+
+function sliderValue(value) {
+  if (value === null || value === undefined) return 0;
+  const num = Number(value);
+  if (Number.isNaN(num)) return 0;
+  return Math.max(0, Math.min(100, num));
 }
 
 function LineChart({ title, points, color = "#0ea5e9" }) {
@@ -44,10 +71,28 @@ function LineChart({ title, points, color = "#0ea5e9" }) {
       <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" preserveAspectRatio="none">
         <path d={path} fill="none" stroke={color} strokeWidth="2" />
       </svg>
-      <div className="chart-meta">
-        最新: {values.length ? fmt(values[values.length - 1], 6) : "-"}
-      </div>
+      <div className="chart-meta">最新: {values.length ? fmt(values[values.length - 1], 6) : "-"}</div>
     </div>
+  );
+}
+
+function SliderField({ label, value, hint, onChange }) {
+  return (
+    <label className="slider-field">
+      <div className="slider-label-row">
+        <span className="slider-label">{label}</span>
+        <span className="slider-value">{fmt(value, 0)}</span>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value={sliderValue(value)}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <div className="slider-hint">{hint}</div>
+    </label>
   );
 }
 
@@ -93,12 +138,29 @@ function LoginPanel({ onLogin, loading }) {
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("mm_token") || "");
   const [authLoading, setAuthLoading] = useState(false);
+
   const [status, setStatus] = useState(null);
   const [metrics, setMetrics] = useState(null);
-  const [runtimeConfig, setRuntimeConfig] = useState(null);
+  const [runtimeProfile, setRuntimeProfile] = useState(null);
+  const [exchangeConfig, setExchangeConfig] = useState(null);
   const [secrets, setSecrets] = useState(null);
   const [orders, setOrders] = useState([]);
   const [trades, setTrades] = useState([]);
+
+  const [apiForm, setApiForm] = useState({
+    grvt_env: "testnet",
+    grvt_use_mock: true,
+    grvt_api_key: "",
+    grvt_api_secret: "",
+    grvt_trading_account_id: "",
+    clear_grvt_api_key: false,
+    clear_grvt_api_secret: false,
+    clear_grvt_trading_account_id: false,
+  });
+
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [exchangeSaving, setExchangeSaving] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
   async function handleLogin(username, password) {
@@ -112,22 +174,41 @@ export default function App() {
     }
   }
 
-  async function loadAll() {
+  async function loadTradingData() {
     if (!token) return;
-    const [statusRes, metricsRes, cfgRes, secretRes, orderRes, tradeRes] = await Promise.all([
+    const [statusRes, metricsRes, orderRes, tradeRes] = await Promise.all([
       fetchStatus(token),
       fetchMetrics(token),
-      fetchRuntimeConfig(token),
-      fetchSecretsStatus(token),
       fetchOpenOrders(token),
       fetchRecentTrades(token),
     ]);
     setStatus(statusRes);
     setMetrics(metricsRes);
-    setRuntimeConfig(cfgRes);
-    setSecrets(secretRes);
     setOrders(orderRes);
     setTrades(tradeRes);
+  }
+
+  async function loadConfigData() {
+    if (!token) return;
+    const [profileRes, exchangeRes, secretRes] = await Promise.all([
+      fetchRuntimeProfile(token),
+      fetchExchangeConfig(token),
+      fetchSecretsStatus(token),
+    ]);
+    setRuntimeProfile(profileRes);
+    setExchangeConfig(exchangeRes);
+    setSecrets(secretRes);
+    setApiForm((prev) => ({
+      ...prev,
+      grvt_env: exchangeRes.grvt_env,
+      grvt_use_mock: exchangeRes.grvt_use_mock,
+      grvt_api_key: "",
+      grvt_api_secret: "",
+      grvt_trading_account_id: "",
+      clear_grvt_api_key: false,
+      clear_grvt_api_secret: false,
+      clear_grvt_trading_account_id: false,
+    }));
   }
 
   useEffect(() => {
@@ -137,13 +218,14 @@ export default function App() {
 
     const start = async () => {
       try {
-        await loadAll();
+        await Promise.all([loadTradingData(), loadConfigData()]);
       } catch (err) {
-        if (!closed) setError(err.message || "加载失败");
+        if (!closed) setError(err.message || "初始化加载失败");
       }
+
       timer = setInterval(async () => {
         try {
-          await loadAll();
+          await loadTradingData();
         } catch (err) {
           if (!closed) setError(err.message || "轮询失败");
         }
@@ -187,7 +269,8 @@ export default function App() {
   async function commandStart() {
     try {
       await startEngine(token);
-      await loadAll();
+      await loadTradingData();
+      setNotice("引擎已启动");
     } catch (err) {
       setError(err.message || "启动失败");
     }
@@ -196,30 +279,61 @@ export default function App() {
   async function commandStop() {
     try {
       await stopEngine(token);
-      await loadAll();
+      await loadTradingData();
+      setNotice("引擎已停止");
     } catch (err) {
       setError(err.message || "停止失败");
     }
   }
 
-  async function saveConfig() {
-    if (!runtimeConfig) return;
+  async function saveProfile() {
+    if (!runtimeProfile) return;
+    setProfileSaving(true);
+    setNotice("");
     try {
       const payload = {
-        ...runtimeConfig,
-        equity_risk_pct: Number(runtimeConfig.equity_risk_pct),
-        max_inventory_notional: Number(runtimeConfig.max_inventory_notional),
-        max_single_order_notional: Number(runtimeConfig.max_single_order_notional),
-        min_spread_bps: Number(runtimeConfig.min_spread_bps),
-        max_spread_bps: Number(runtimeConfig.max_spread_bps),
-        requote_threshold_bps: Number(runtimeConfig.requote_threshold_bps),
-        drawdown_kill_pct: Number(runtimeConfig.drawdown_kill_pct),
-        volatility_kill_zscore: Number(runtimeConfig.volatility_kill_zscore),
+        aggressiveness: sliderValue(runtimeProfile.aggressiveness),
+        inventory_tolerance: sliderValue(runtimeProfile.inventory_tolerance),
+        risk_threshold: sliderValue(runtimeProfile.risk_threshold),
       };
-      const cfg = await updateRuntimeConfig(token, payload);
-      setRuntimeConfig(cfg);
+      const updated = await updateRuntimeProfile(token, payload);
+      setRuntimeProfile(updated);
+      setNotice("自动参数已保存");
     } catch (err) {
-      setError(err.message || "保存配置失败");
+      setError(err.message || "保存自动参数失败");
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  const canEditApi = status?.mode === "idle" || status?.mode === "halted";
+
+  async function saveExchange() {
+    if (!canEditApi) {
+      setError("引擎运行中禁止修改 API 配置，请先停止引擎");
+      return;
+    }
+    setExchangeSaving(true);
+    setNotice("");
+    try {
+      const payload = {
+        grvt_env: apiForm.grvt_env,
+        grvt_use_mock: apiForm.grvt_use_mock,
+        grvt_api_key: apiForm.grvt_api_key,
+        grvt_api_secret: apiForm.grvt_api_secret,
+        grvt_trading_account_id: apiForm.grvt_trading_account_id,
+        clear_grvt_api_key: apiForm.clear_grvt_api_key,
+        clear_grvt_api_secret: apiForm.clear_grvt_api_secret,
+        clear_grvt_trading_account_id: apiForm.clear_grvt_trading_account_id,
+      };
+      const updated = await updateExchangeConfig(token, payload);
+      setExchangeConfig(updated);
+      await loadConfigData();
+      setNotice("API 配置已保存");
+    } catch (err) {
+      setError(err.message || "保存 API 配置失败");
+    } finally {
+      setExchangeSaving(false);
     }
   }
 
@@ -243,21 +357,44 @@ export default function App() {
           <p>交易对: {status?.symbol || "-"}</p>
         </div>
         <div className="actions">
-          <button className="btn-primary" onClick={commandStart}>启动</button>
-          <button className="btn-danger" onClick={commandStop}>停止</button>
+          <button className="btn-primary" onClick={commandStart}>
+            启动
+          </button>
+          <button className="btn-danger" onClick={commandStop}>
+            停止
+          </button>
           <button onClick={logout}>退出</button>
         </div>
       </header>
 
       {error && <div className="error-banner">{error}</div>}
+      {notice && <div className="notice-banner">{notice}</div>}
 
       <section className="cards">
-        <div className="card"><span>引擎模式</span><strong>{status?.mode || "-"}</strong></div>
-        <div className="card"><span>账户权益</span><strong>{fmt(summary?.equity, 2)}</strong></div>
-        <div className="card"><span>PnL</span><strong>{fmt(summary?.pnl, 2)}</strong></div>
-        <div className="card"><span>净仓名义</span><strong>{fmt(summary?.inventory_notional, 2)}</strong></div>
-        <div className="card"><span>动态价差(bps)</span><strong>{fmt(summary?.spread_bps, 2)}</strong></div>
-        <div className="card"><span>实时波动(sigma)</span><strong>{fmt(summary?.sigma, 6)}</strong></div>
+        <div className="card">
+          <span>引擎模式</span>
+          <strong>{status?.mode || "-"}</strong>
+        </div>
+        <div className="card">
+          <span>账户权益</span>
+          <strong>{fmt(summary?.equity, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>PnL</span>
+          <strong>{fmt(summary?.pnl, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>净仓名义</span>
+          <strong>{fmt(summary?.inventory_notional, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>动态价差(bps)</span>
+          <strong>{fmt(summary?.spread_bps, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>实时波动(sigma)</span>
+          <strong>{fmt(summary?.sigma, 6)}</strong>
+        </div>
       </section>
 
       <section className="charts-grid">
@@ -268,29 +405,131 @@ export default function App() {
 
       <section className="panel-grid">
         <div className="panel">
-          <h2>运行参数</h2>
-          {runtimeConfig && (
-            <div className="form-grid">
-              {["equity_risk_pct", "max_inventory_notional", "max_single_order_notional", "min_spread_bps", "max_spread_bps", "requote_threshold_bps", "drawdown_kill_pct", "volatility_kill_zscore"].map((key) => (
-                <label key={key}>
-                  <span>{key}</span>
-                  <input
-                    value={runtimeConfig[key]}
-                    onChange={(e) => setRuntimeConfig((s) => ({ ...s, [key]: e.target.value }))}
-                  />
-                </label>
+          <h2>自动参数（仅三旋钮）</h2>
+          <p className="panel-tip">系统会根据三项控制杆自动映射内部参数，并继续实时自适应。</p>
+          {runtimeProfile && (
+            <div className="slider-grid">
+              {profileFieldMeta.map((field) => (
+                <SliderField
+                  key={field.key}
+                  label={field.label}
+                  value={runtimeProfile[field.key]}
+                  hint={field.hint}
+                  onChange={(value) => setRuntimeProfile((prev) => ({ ...prev, [field.key]: value }))}
+                />
               ))}
-              <button className="btn-primary" onClick={saveConfig}>保存参数</button>
+              <button className="btn-primary" disabled={profileSaving} onClick={saveProfile}>
+                {profileSaving ? "保存中..." : "保存自动参数"}
+              </button>
+              <div className="preview-list">
+                <div>风险系数 γ: {fmt(runtimeProfile.runtime_preview?.base_gamma, 3)}</div>
+                <div>最小价差(bps): {fmt(runtimeProfile.runtime_preview?.min_spread_bps, 2)}</div>
+                <div>最大价差(bps): {fmt(runtimeProfile.runtime_preview?.max_spread_bps, 2)}</div>
+                <div>最大库存名义: {fmt(runtimeProfile.runtime_preview?.max_inventory_notional, 2)}</div>
+                <div>回撤熔断(%): {fmt(runtimeProfile.runtime_preview?.drawdown_kill_pct, 2)}</div>
+              </div>
             </div>
           )}
         </div>
 
         <div className="panel">
-          <h2>密钥状态</h2>
+          <h2>API 配置</h2>
+          <p className="panel-tip">仅在引擎 idle/halted 时允许修改，保存后密钥不会回显。</p>
+          <div className="form-grid">
+            <label>
+              <span>GRVT 环境</span>
+              <select
+                value={apiForm.grvt_env}
+                onChange={(e) => setApiForm((s) => ({ ...s, grvt_env: e.target.value }))}
+              >
+                <option value="testnet">testnet</option>
+                <option value="prod">prod</option>
+                <option value="staging">staging</option>
+                <option value="dev">dev</option>
+              </select>
+            </label>
+
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={apiForm.grvt_use_mock}
+                onChange={(e) => setApiForm((s) => ({ ...s, grvt_use_mock: e.target.checked }))}
+              />
+              <span>使用 Mock 交易所</span>
+            </label>
+
+            <label>
+              <span>GRVT_API_KEY</span>
+              <input
+                type="password"
+                value={apiForm.grvt_api_key}
+                disabled={apiForm.clear_grvt_api_key}
+                placeholder="留空表示保持原值"
+                onChange={(e) => setApiForm((s) => ({ ...s, grvt_api_key: e.target.value }))}
+              />
+            </label>
+
+            <label>
+              <span>GRVT_API_SECRET</span>
+              <input
+                type="password"
+                value={apiForm.grvt_api_secret}
+                disabled={apiForm.clear_grvt_api_secret}
+                placeholder="留空表示保持原值"
+                onChange={(e) => setApiForm((s) => ({ ...s, grvt_api_secret: e.target.value }))}
+              />
+            </label>
+
+            <label>
+              <span>GRVT_TRADING_ACCOUNT_ID</span>
+              <input
+                value={apiForm.grvt_trading_account_id}
+                disabled={apiForm.clear_grvt_trading_account_id}
+                placeholder="留空表示保持原值"
+                onChange={(e) => setApiForm((s) => ({ ...s, grvt_trading_account_id: e.target.value }))}
+              />
+            </label>
+
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={apiForm.clear_grvt_api_key}
+                onChange={(e) => setApiForm((s) => ({ ...s, clear_grvt_api_key: e.target.checked }))}
+              />
+              <span>清空已保存 API Key</span>
+            </label>
+
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={apiForm.clear_grvt_api_secret}
+                onChange={(e) => setApiForm((s) => ({ ...s, clear_grvt_api_secret: e.target.checked }))}
+              />
+              <span>清空已保存 API Secret</span>
+            </label>
+
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={apiForm.clear_grvt_trading_account_id}
+                onChange={(e) => setApiForm((s) => ({ ...s, clear_grvt_trading_account_id: e.target.checked }))}
+              />
+              <span>清空已保存 Trading Account ID</span>
+            </label>
+
+            <button className="btn-primary" disabled={!canEditApi || exchangeSaving} onClick={saveExchange}>
+              {exchangeSaving ? "保存中..." : "保存 API 配置"}
+            </button>
+            {!canEditApi && <div className="block-hint">引擎运行中不可修改 API，请先停止。</div>}
+          </div>
+
           <ul className="status-list">
-            <li>GRVT_API_KEY: {secrets?.grvt_api_key_configured ? "已配置" : "未配置"}</li>
-            <li>GRVT_API_SECRET: {secrets?.grvt_api_secret_configured ? "已配置" : "未配置"}</li>
-            <li>GRVT_TRADING_ACCOUNT_ID: {secrets?.grvt_trading_account_id_configured ? "已配置" : "未配置"}</li>
+            <li>GRVT_API_KEY: {exchangeConfig?.grvt_api_key_configured ? "已配置" : "未配置"}</li>
+            <li>GRVT_API_SECRET: {exchangeConfig?.grvt_api_secret_configured ? "已配置" : "未配置"}</li>
+            <li>
+              GRVT_TRADING_ACCOUNT_ID:{" "}
+              {exchangeConfig?.grvt_trading_account_id_configured ? "已配置" : "未配置"}
+            </li>
             <li>JWT密钥: {secrets?.app_jwt_secret_configured ? "已配置" : "未配置"}</li>
             <li>Telegram: {secrets?.telegram_configured ? "已配置" : "未配置"}</li>
           </ul>
@@ -301,10 +540,24 @@ export default function App() {
         <div className="panel table-panel">
           <h2>当前挂单</h2>
           <table>
-            <thead><tr><th>ID</th><th>方向</th><th>价格</th><th>数量</th><th>状态</th></tr></thead>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>方向</th>
+                <th>价格</th>
+                <th>数量</th>
+                <th>状态</th>
+              </tr>
+            </thead>
             <tbody>
               {orders.map((o) => (
-                <tr key={o.order_id}><td>{o.order_id}</td><td>{o.side}</td><td>{fmt(o.price, 4)}</td><td>{fmt(o.size, 4)}</td><td>{o.status}</td></tr>
+                <tr key={o.order_id}>
+                  <td>{o.order_id}</td>
+                  <td>{o.side}</td>
+                  <td>{fmt(o.price, 4)}</td>
+                  <td>{fmt(o.size, 4)}</td>
+                  <td>{o.status}</td>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -313,10 +566,24 @@ export default function App() {
         <div className="panel table-panel">
           <h2>最近成交</h2>
           <table>
-            <thead><tr><th>ID</th><th>方向</th><th>价格</th><th>数量</th><th>手续费</th></tr></thead>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>方向</th>
+                <th>价格</th>
+                <th>数量</th>
+                <th>手续费</th>
+              </tr>
+            </thead>
             <tbody>
               {trades.map((t) => (
-                <tr key={t.trade_id}><td>{t.trade_id}</td><td>{t.side}</td><td>{fmt(t.price, 4)}</td><td>{fmt(t.size, 4)}</td><td>{fmt(t.fee, 6)}</td></tr>
+                <tr key={t.trade_id}>
+                  <td>{t.trade_id}</td>
+                  <td>{t.side}</td>
+                  <td>{fmt(t.price, 4)}</td>
+                  <td>{fmt(t.size, 4)}</td>
+                  <td>{fmt(t.fee, 6)}</td>
+                </tr>
               ))}
             </tbody>
           </table>

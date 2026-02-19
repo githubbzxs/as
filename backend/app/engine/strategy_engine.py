@@ -112,6 +112,12 @@ class StrategyEngine:
     async def refresh_runtime_config(self) -> None:
         await self._event_bus.publish("config", self._config_store.get().model_dump())
 
+    def replace_adapter(self, adapter: ExchangeAdapter) -> None:
+        """切换交易所连接实例（仅应在非运行态调用）。"""
+        self._adapter = adapter
+        self._exchange_connected = False
+        self._last_error = None
+
     def status(self) -> HealthStatus:
         cfg = self._config_store.get()
         return HealthStatus(

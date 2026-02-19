@@ -7,7 +7,7 @@
 - Post-only 限价下单
 - 三重熔断（连续失败/回撤/异常波动）
 - WebUI（登录、启停、监控、参数时序、参数热更新）
-- API Key 环境变量管理（UI 仅展示配置状态）
+- API 配置管理（UI 可写入，密钥不回显）
 
 > 首版不包含回测模块。
 
@@ -87,6 +87,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 - `APP_ADMIN_PASSWORD_HASH`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `EXCHANGE_CONFIG_PATH`：交易所连接配置持久化文件
 
 ## API 概览
 
@@ -99,8 +100,19 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 - `POST /api/engine/stop`
 - `GET /api/config/runtime`
 - `PUT /api/config/runtime`
+- `GET /api/config/runtime/profile`
+- `PUT /api/config/runtime/profile`
+- `GET /api/config/exchange`
+- `PUT /api/config/exchange`
 - `GET /api/config/secrets/status`
 - `WS /ws/stream?token=...`
+
+## 自动参数与 API 配置规则
+
+- 参数面板默认采用“三旋钮自动模式”：`做市激进度`、`库存容忍度`、`风险阈值`
+- 后端会将三旋钮映射到内部运行参数，并继续执行实时自适应
+- API 配置保存后密钥不会回显，仅展示“已配置/未配置”
+- 当引擎状态不是 `idle/halted` 时，`PUT /api/config/exchange` 会返回 `409`，避免运行中误改凭证
 
 ## 测试
 

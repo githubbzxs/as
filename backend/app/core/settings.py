@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
 
     runtime_config_path: str = Field(default="data/runtime_config.json", alias="RUNTIME_CONFIG_PATH")
+    exchange_config_path: str = Field(default="data/exchange_config.json", alias="EXCHANGE_CONFIG_PATH")
     data_dir: str = Field(default="data", alias="DATA_DIR")
 
     stream_queue_size: int = 1024
@@ -40,6 +41,10 @@ class Settings(BaseSettings):
     @property
     def runtime_config_file(self) -> Path:
         return Path(self.runtime_config_path)
+
+    @property
+    def exchange_config_file(self) -> Path:
+        return Path(self.exchange_config_path)
 
 
 @lru_cache(maxsize=1)

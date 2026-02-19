@@ -65,6 +65,38 @@ class RuntimeConfig(BaseModel):
         return v
 
 
+class RuntimeProfileConfig(BaseModel):
+    aggressiveness: float = Field(default=55.0, ge=0, le=100)
+    inventory_tolerance: float = Field(default=40.0, ge=0, le=100)
+    risk_threshold: float = Field(default=45.0, ge=0, le=100)
+
+
+class RuntimeProfileView(RuntimeProfileConfig):
+    runtime_preview: dict[str, float | int]
+
+
+class ExchangeConfigUpdateRequest(BaseModel):
+    grvt_env: Literal["testnet", "prod", "staging", "dev"] | None = None
+    grvt_use_mock: bool | None = None
+
+    grvt_api_key: str | None = None
+    grvt_api_secret: str | None = None
+    grvt_trading_account_id: str | None = None
+
+    clear_grvt_api_key: bool = False
+    clear_grvt_api_secret: bool = False
+    clear_grvt_trading_account_id: bool = False
+
+
+class ExchangeConfigView(BaseModel):
+    grvt_env: str
+    grvt_use_mock: bool
+    grvt_api_key_configured: bool
+    grvt_api_secret_configured: bool
+    grvt_trading_account_id_configured: bool
+    updated_at: datetime
+
+
 class SecretsStatus(BaseModel):
     grvt_api_key_configured: bool
     grvt_api_secret_configured: bool
