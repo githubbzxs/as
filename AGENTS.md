@@ -35,6 +35,10 @@
   - Why：按产品要求简化界面，降低非必要诊断噪声。
   - Impact：`frontend/src/App.jsx`、`frontend/src/styles.css`
 
+- **[2026-02-19] 挂单失败根因修复**：`client_order_id` 由超长数字改为 18 位短数字，避免交易所侧重复判定导致持续拒单。
+  - Why：线上出现持续 `400 code=2013 (Client Order ID repeats with the last order)`，引擎运行但始终无在簿挂单。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_requote.py`
+
 ## Decisions
 
 - **[2026-02-19] 策略框架**：采用 Avellaneda-Stoikov + 基础自适应（波动率/深度/成交强度）。
@@ -122,3 +126,7 @@
 - **[2026-02-19] 近期异常模式补充**：若日志频繁出现 `KeyError: 'event_time'` 或 `invalid literal for int()`，优先检查是否为交易所响应字段缺失/非数字 client_order_id 触发。
   - Why：这两类异常会显著降低有效运行窗口并间接导致“无成交”误判。
   - Verify：`journalctl -u grvt-mm --no-pager | egrep \"event_time|invalid literal for int\"` 应不再持续刷屏。
+
+- **[2026-02-19] 运行但不挂单排查结论**：若 `mode=running` 但 `open_orders=[]` 且日志反复出现 `code=2013 Client Order ID repeats with the last order`，则为下单被交易所拒绝而非策略未触发。
+  - Why：此场景会表现为持续 `missing-side-buy,missing-side-sell` 和撤单计数增长。
+  - Verify：`journalctl -u grvt-mm --no-pager | grep "code': 2013"`；修复后应出现 `create_order` 成功并能查到 open orders。

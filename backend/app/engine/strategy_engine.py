@@ -397,11 +397,11 @@ class StrategyEngine:
 
     @staticmethod
     def _new_client_order_id(side: str) -> str:
-        # 使用纯数字，规避部分 SDK 在解析 client_order_id 时的 int 转换异常。
+        # 使用较短的纯数字，避免超长整数在交易所侧精度/类型转换后产生重复判定。
         side_flag = "1" if side == "buy" else "2"
-        nonce = int(utcnow().timestamp() * 1_000_000)
-        suffix = uuid.uuid4().int % 1_000_000
-        return f"{side_flag}{nonce}{suffix:06d}"
+        nonce_ms = int(utcnow().timestamp() * 1_000)
+        suffix = uuid.uuid4().int % 10_000
+        return f"{side_flag}{nonce_ms}{suffix:04d}"
 
     @staticmethod
     def _classify_error(exc: Exception) -> str:

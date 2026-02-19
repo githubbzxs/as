@@ -34,4 +34,4 @@ def test_collect_requote_reasons_inventory_limit():
 def test_new_client_order_id_is_numeric():
     order_id = StrategyEngine._new_client_order_id("buy")
     assert order_id.isdigit()
-    assert len(order_id) >= 20
+    assert len(order_id) == 18
