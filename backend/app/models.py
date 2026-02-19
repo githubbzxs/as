@@ -62,6 +62,8 @@ class EngineTick:
     position: PositionSnapshot
     equity: float
     pnl: float
+    pnl_total: float
+    pnl_daily: float
     sigma: float
     sigma_zscore: float
     distance_bid_bps: float = 0.0

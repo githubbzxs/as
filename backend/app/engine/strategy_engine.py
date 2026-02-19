@@ -6,7 +6,7 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from app.engine.adaptive import AdaptiveController
 from app.engine.as_model import AsMarketMakerModel
@@ -59,6 +59,10 @@ class StrategyEngine:
         self._readonly_until: datetime | None = None
 
         self._initial_equity: float | None = None
+        self._day_start_equity: float | None = None
+        self._equity_day: date | None = None
+        self._engine_started_at: datetime | None = None
+        self._last_heartbeat_at: datetime | None = None
         self._consecutive_failures: int = 0
         self._last_status_at: datetime = utcnow()
 
@@ -72,33 +76,51 @@ class StrategyEngine:
         self._kill_reason = None
         self._last_error = None
         self._consecutive_failures = 0
+        self._initial_equity = None
+        self._day_start_equity = None
+        self._equity_day = None
+        self._engine_started_at = utcnow()
+        self._last_heartbeat_at = None
+        self._risk.reset_peak(0.0)
+        self._monitor.reset_session(started_at=self._engine_started_at)
 
-        cfg = self._config_store.get()
         self._mode = "running"
         self._readonly_until = None
 
         self._task = asyncio.create_task(self._run_loop(), name="strategy-engine-loop")
         await self._event_bus.publish("engine", {"status": "started", "mode": self._mode})
-        await self._alert.send("Engine", "做市引擎已启动，开始自动做市")
+        await self._alert.send_event(
+            level="INFO",
+            event="ENGINE_START",
+            message="做市引擎已启动，开始自动做市",
+        )
         return self._mode
 
     async def stop(self, reason: str = "manual") -> str:
         self._running = False
         self._stop_event.set()
-        self._mode = "idle"
-        try:
-            cfg = self._config_store.get()
-            await self._adapter.cancel_all_orders(cfg.symbol)
-        except Exception as exc:
-            self._logger.warning("停止时撤单失败: %s", exc)
 
-        if self._task and not self._task.done():
+        current = asyncio.current_task()
+        if self._task and not self._task.done() and self._task is not current:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-        self._task = None
+        if self._task is not current:
+            self._task = None
 
+        cfg = self._config_store.get()
+        await self._cancel_all_orders_safe(cfg.symbol, stage="stop")
+        await self._flatten_position_until_done(cfg, trigger="stop")
+
+        self._mode = "idle"
+        self._last_status_at = utcnow()
         await self._event_bus.publish("engine", {"status": "stopped", "reason": reason, "mode": self._mode})
+        await self._alert.send_event(
+            level="INFO",
+            event="ENGINE_STOP",
+            message="引擎已停止并完成 taker 平仓",
+            details={"reason": reason},
+        )
         return self._mode
 
     async def halt(self, reason: str) -> None:
@@ -107,14 +129,24 @@ class StrategyEngine:
         self._running = False
         self._stop_event.set()
 
-        cfg = self._config_store.get()
-        try:
-            await self._adapter.cancel_all_orders(cfg.symbol)
-        except Exception as exc:
-            self._logger.warning("熔断撤单失败: %s", exc)
+        current = asyncio.current_task()
+        if self._task and not self._task.done() and self._task is not current:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
 
+        cfg = self._config_store.get()
+        await self._cancel_all_orders_safe(cfg.symbol, stage="halt")
+        await self._flatten_position_until_done(cfg, trigger="halt")
+
+        self._last_status_at = utcnow()
         await self._event_bus.publish("engine", {"status": "halted", "reason": reason, "mode": self._mode})
-        await self._alert.send("KillSwitch", reason)
+        await self._alert.send_event(
+            level="CRITICAL",
+            event="KILL_SWITCH",
+            message=reason,
+        )
 
     async def refresh_runtime_config(self) -> None:
         await self._event_bus.publish("config", self._config_store.get().model_dump())
@@ -161,6 +193,7 @@ class StrategyEngine:
         while not self._stop_event.is_set():
             tick_started = utcnow()
             cfg = self._config_store.get()
+            self._adaptive.set_windows(cfg.sigma_window_sec, cfg.quote_interval_sec)
 
             try:
                 market = await self._adapter.fetch_market_snapshot(cfg.symbol)
@@ -170,13 +203,15 @@ class StrategyEngine:
                 if self._initial_equity is None:
                     self._initial_equity = equity
                     self._risk.reset_peak(equity)
+                self._refresh_daily_equity_anchor(equity)
 
                 sigma, sigma_z = self._adaptive.update(market.mid, market.depth_score, market.trade_intensity)
                 depth_factor = self._adaptive.depth_factor()
                 intensity_factor = self._adaptive.intensity_factor()
                 size_factor = self._adaptive.quote_size_factor()
 
-                max_inventory_base = cfg.max_inventory_notional / max(market.mid, 1e-9)
+                max_inventory_notional_runtime = self._runtime_inventory_cap_notional(cfg, equity)
+                max_inventory_base = max_inventory_notional_runtime / max(market.mid, 1e-9)
                 base_quote_notional = min(
                     cfg.max_single_order_notional,
                     max(1.0, equity * cfg.equity_risk_pct * 0.5),
@@ -203,7 +238,12 @@ class StrategyEngine:
 
                 sync_result = SyncResult(requoted=False, reason="none")
                 if self._mode == "running":
-                    sync_result = await self._sync_orders(cfg, position, decision)
+                    sync_result = await self._sync_orders(
+                        cfg,
+                        position,
+                        decision,
+                        max_inventory_notional=max_inventory_notional_runtime,
+                    )
                     if sync_result.requoted:
                         self._monitor.record_cancel(utcnow())
 
@@ -212,17 +252,21 @@ class StrategyEngine:
                 self._monitor.update_orders(open_orders)
                 self._monitor.update_trades(recent_trades)
 
-                pnl = equity - (self._initial_equity or equity)
+                pnl_total = equity - (self._initial_equity or equity)
+                pnl_daily = equity - (self._day_start_equity or equity)
                 drawdown = self._risk.update_drawdown(equity)
                 distance_bid_bps = self._distance_from_bid_bps(market.bid, decision.bid_price)
                 distance_ask_bps = self._distance_from_ask_bps(market.ask, decision.ask_price)
+                now = utcnow()
                 engine_tick = EngineTick(
-                    timestamp=utcnow(),
+                    timestamp=now,
                     market=market,
                     decision=decision,
                     position=position,
                     equity=equity,
-                    pnl=pnl,
+                    pnl=pnl_total,
+                    pnl_total=pnl_total,
+                    pnl_daily=pnl_daily,
                     sigma=sigma,
                     sigma_zscore=sigma_z,
                     distance_bid_bps=distance_bid_bps,
@@ -260,9 +304,12 @@ class StrategyEngine:
                             "requote_reason": sync_result.reason,
                             "open_order_age_buy_sec": summary.open_order_age_buy_sec,
                             "open_order_age_sell_sec": summary.open_order_age_sell_sec,
+                            "max_inventory_notional_runtime": max_inventory_notional_runtime,
                         },
                     },
                 )
+
+                await self._maybe_send_heartbeat(cfg, summary)
 
                 risk_result = self._risk.evaluate(
                     RiskInput(
@@ -299,7 +346,13 @@ class StrategyEngine:
                         "consecutive_failures": self._consecutive_failures,
                     },
                 )
-                await self._alert.send("EngineError", f"[{category}] {exc}")
+                await self._alert.send_event(
+                    level="WARN",
+                    event="ENGINE_ERROR",
+                    message=f"[{category}] {exc}",
+                    dedupe_key=f"engine-error-{category}",
+                    min_interval_sec=60,
+                )
 
             elapsed = (utcnow() - tick_started).total_seconds()
             sleep_for = max(0.01, cfg.quote_interval_sec - elapsed)
@@ -307,6 +360,119 @@ class StrategyEngine:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_for)
             except asyncio.TimeoutError:
                 pass
+
+    async def _cancel_all_orders_safe(self, symbol: str, stage: str) -> None:
+        try:
+            await self._adapter.cancel_all_orders(symbol)
+        except Exception as exc:
+            self._logger.warning("%s 时撤单失败: %s", stage, exc)
+
+    async def _flatten_position_until_done(self, cfg: RuntimeConfig, trigger: str) -> None:
+        retries = 0
+        delay = cfg.close_retry_base_delay_sec
+        while True:
+            try:
+                pos = await self._adapter.fetch_position(cfg.symbol)
+                pos_size = abs(float(pos.base_position))
+                if pos_size <= cfg.close_position_epsilon_base:
+                    await self._event_bus.publish(
+                        "close_done",
+                        {
+                            "symbol": cfg.symbol,
+                            "trigger": trigger,
+                            "retries": retries,
+                            "remaining_base": pos_size,
+                        },
+                    )
+                    await self._alert.send_event(
+                        level="INFO",
+                        event="POSITION_FLAT",
+                        message="仓位已完成 taker 平仓",
+                        details={
+                            "trigger": trigger,
+                            "symbol": cfg.symbol,
+                            "retries": retries,
+                        },
+                    )
+                    return
+
+                await self._adapter.flatten_position_taker(cfg.symbol)
+                retries += 1
+                await self._event_bus.publish(
+                    "close_attempt",
+                    {
+                        "symbol": cfg.symbol,
+                        "trigger": trigger,
+                        "attempt": retries,
+                        "position_base": pos.base_position,
+                    },
+                )
+            except Exception as exc:
+                retries += 1
+                self._logger.exception("taker 平仓失败(%s) attempt=%s: %s", trigger, retries, exc)
+                await self._event_bus.publish(
+                    "close_retry",
+                    {
+                        "symbol": cfg.symbol,
+                        "trigger": trigger,
+                        "attempt": retries,
+                        "error": str(exc),
+                    },
+                )
+                await self._alert.send_event(
+                    level="WARN",
+                    event="POSITION_FLATTEN_RETRY",
+                    message="taker 平仓失败，继续重试",
+                    details={
+                        "trigger": trigger,
+                        "attempt": retries,
+                        "error": str(exc),
+                    },
+                    dedupe_key=f"flatten-retry-{trigger}",
+                    min_interval_sec=60,
+                )
+
+            await asyncio.sleep(min(delay, cfg.close_retry_max_delay_sec))
+            delay = min(cfg.close_retry_max_delay_sec, max(cfg.close_retry_base_delay_sec, delay * 2))
+
+    async def _maybe_send_heartbeat(self, cfg: RuntimeConfig, summary) -> None:
+        if not cfg.tg_heartbeat_enabled:
+            return
+        now = utcnow()
+        if self._last_heartbeat_at is not None:
+            if (now - self._last_heartbeat_at).total_seconds() < cfg.tg_heartbeat_interval_sec:
+                return
+        self._last_heartbeat_at = now
+        await self._alert.send_event(
+            level="INFO",
+            event="HEARTBEAT",
+            message="运行状态摘要",
+            details={
+                "mode": summary.mode,
+                "equity": round(summary.equity, 6),
+                "pnl_total": round(summary.pnl_total, 6),
+                "pnl_daily": round(summary.pnl_daily, 6),
+                "inventory_notional": round(summary.inventory_notional, 6),
+                "run_duration_sec": round(summary.run_duration_sec, 2),
+                "total_trade_volume_notional": round(summary.total_trade_volume_notional, 6),
+                "total_fee_rebate": round(summary.total_fee_rebate, 6),
+                "total_fee_cost": round(summary.total_fee_cost, 6),
+            },
+            dedupe_key="heartbeat",
+            min_interval_sec=cfg.tg_heartbeat_interval_sec,
+        )
+
+    def _refresh_daily_equity_anchor(self, equity: float) -> None:
+        today = utcnow().date()
+        if self._equity_day != today or self._day_start_equity is None:
+            self._equity_day = today
+            self._day_start_equity = equity
+
+    @staticmethod
+    def _runtime_inventory_cap_notional(cfg: RuntimeConfig, equity: float) -> float:
+        if cfg.max_inventory_notional_pct > 0:
+            return max(0.0, equity * cfg.max_inventory_notional_pct)
+        return max(0.0, cfg.max_inventory_notional)
 
     def _post_only_guard(self, bid: float, ask: float, decision: QuoteDecision, price_tick: float) -> None:
         min_tick = max(0.0001, price_tick)
@@ -319,14 +485,20 @@ class StrategyEngine:
         if decision.bid_price >= decision.ask_price:
             decision.ask_price = self._round_price_by_tick(decision.bid_price + min_tick, min_tick, "up")
 
-    async def _sync_orders(self, cfg: RuntimeConfig, position: PositionSnapshot, decision: QuoteDecision) -> SyncResult:
+    async def _sync_orders(
+        self,
+        cfg: RuntimeConfig,
+        position: PositionSnapshot,
+        decision: QuoteDecision,
+        *,
+        max_inventory_notional: float,
+    ) -> SyncResult:
         orders = await self._adapter.fetch_open_orders(cfg.symbol)
         buy_order = next((o for o in orders if o.side == "buy"), None)
         sell_order = next((o for o in orders if o.side == "sell"), None)
 
-        max_inventory = cfg.max_inventory_notional
-        only_sell = position.notional > max_inventory
-        only_buy = position.notional < -max_inventory
+        only_sell = position.notional > max_inventory_notional
+        only_buy = position.notional < -max_inventory_notional
 
         buy_dev = bool(
             buy_order and self._price_deviation_bps(buy_order.price, decision.bid_price) > cfg.requote_threshold_bps

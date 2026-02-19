@@ -114,11 +114,29 @@ class GrvtLiveAdapter(ExchangeAdapter):
 
     async def fetch_equity(self) -> float:
         balance = await asyncio.to_thread(self._client.fetch_balance, "aggregated")
-        usdt = balance.get("USDT", {}) if isinstance(balance, dict) else {}
-        total = usdt.get("total") if isinstance(usdt, dict) else None
-        if total is None:
-            total = balance.get("total", {}).get("USDT", 0.0) if isinstance(balance, dict) else 0.0
-        return float(total or 0.0)
+        if not isinstance(balance, dict):
+            return 0.0
+
+        usdt = balance.get("USDT", {})
+        if isinstance(usdt, dict):
+            direct_total = usdt.get("total")
+            if direct_total is not None:
+                return float(self._decode_fixed(direct_total))
+            free = self._decode_fixed(usdt.get("free", 0.0))
+            used = self._decode_fixed(usdt.get("used", 0.0))
+            if free or used:
+                return float(free + used)
+
+        totals = balance.get("total", {})
+        if isinstance(totals, dict) and totals.get("USDT") is not None:
+            return float(self._decode_fixed(totals.get("USDT")))
+
+        for key in ("equity", "account_value", "nav"):
+            if balance.get(key) is not None:
+                return float(self._decode_fixed(balance.get(key)))
+
+        self._logger.warning("fetch_balance 未命中标准权益字段，可用keys=%s", ",".join(balance.keys()))
+        return 0.0
 
     async def fetch_position(self, symbol: str) -> PositionSnapshot:
         ex_symbol = self._normalize_symbol(symbol)
@@ -226,6 +244,48 @@ class GrvtLiveAdapter(ExchangeAdapter):
     async def cancel_all_orders(self, symbol: str) -> None:
         ex_symbol = self._normalize_symbol(symbol)
         await asyncio.to_thread(self._client.cancel_all_orders, {"symbol": ex_symbol})
+
+    async def close_position_taker(
+        self,
+        symbol: str,
+        side: str,
+        size: float,
+        reduce_only: bool = True,
+    ) -> OrderSnapshot:
+        ex_symbol = self._normalize_symbol(symbol)
+        amount = max(0.0, float(size))
+        params = {
+            "post_only": False,
+            "reduce_only": bool(reduce_only),
+            "time_in_force": "IOC",
+        }
+        result = await asyncio.to_thread(
+            self._client.create_order,
+            ex_symbol,
+            "market",
+            "buy" if side == "buy" else "sell",
+            amount,
+            None,
+            params,
+        )
+        payload = result if isinstance(result, dict) else {}
+        oid = self._extract_order_id(payload) or f"close-{datetime.now(timezone.utc).timestamp()}"
+        return OrderSnapshot(
+            order_id=oid,
+            side="buy" if side == "buy" else "sell",
+            price=0.0,
+            size=amount,
+            status=str(payload.get("status", "closed")).lower(),
+            created_at=datetime.now(timezone.utc),
+        )
+
+    async def flatten_position_taker(self, symbol: str) -> None:
+        pos = await self.fetch_position(symbol)
+        size = abs(float(pos.base_position))
+        if size <= 1e-12:
+            return
+        side = "sell" if pos.base_position > 0 else "buy"
+        await self.close_position_taker(symbol=symbol, side=side, size=size, reduce_only=True)
 
     def _decode_fixed(self, value: Any) -> float:
         if value is None:

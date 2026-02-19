@@ -11,18 +11,22 @@ def _build_engine(config: RuntimeConfig | None = None):
     adapter.cancel_all_orders = AsyncMock()
     adapter.fetch_open_orders = AsyncMock(return_value=[])
     adapter.place_limit_order = AsyncMock()
+    adapter.fetch_position = AsyncMock(return_value=PositionSnapshot(symbol="BNB_USDT_Perp", base_position=0.0, notional=0.0))
+    adapter.flatten_position_taker = AsyncMock()
 
     config_store = Mock()
     config_store.get = Mock(return_value=config or RuntimeConfig())
 
     monitor = Mock()
     monitor.record_cancel = Mock()
+    monitor.reset_session = Mock()
 
     event_bus = Mock()
     event_bus.publish = AsyncMock()
 
     alert = Mock()
     alert.send = AsyncMock()
+    alert.send_event = AsyncMock()
 
     engine = StrategyEngine(
         adapter=adapter,
@@ -52,7 +56,7 @@ def test_start_enters_running_mode_immediately(monkeypatch):
     asyncio.run(scenario())
 
     adapter.cancel_all_orders.assert_awaited_once()
-    alert.send.assert_any_await("Engine", "做市引擎已启动，开始自动做市")
+    alert.send_event.assert_any_await(level="INFO", event="ENGINE_START", message="做市引擎已启动，开始自动做市")
 
 
 def test_sync_orders_places_both_sides_when_orders_missing():
@@ -71,7 +75,12 @@ def test_sync_orders_places_both_sides_when_orders_missing():
     )
 
     async def scenario():
-        return await engine._sync_orders(cfg, position, decision)  # noqa: SLF001
+        return await engine._sync_orders(
+            cfg,
+            position,
+            decision,
+            max_inventory_notional=cfg.max_inventory_notional,
+        )  # noqa: SLF001
 
     result = asyncio.run(scenario())
 

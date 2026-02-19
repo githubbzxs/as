@@ -12,6 +12,15 @@ class MonitoringService:
     """聚合监控指标与时序数据。"""
 
     def __init__(self, max_points: int = 1200) -> None:
+        self._seen_trade_limit = max_points * 20
+        self._seen_trade_keys: set[str] = set()
+        self._seen_trade_queue: deque[str] = deque()
+        self._session_started_at = datetime.now(timezone.utc)
+        self._total_trade_count = 0
+        self._total_trade_volume_notional = 0.0
+        self._total_fee = 0.0
+        self._total_fee_rebate = 0.0
+        self._total_fee_cost = 0.0
         self._summary = MetricsSummary(
             timestamp=datetime.now(timezone.utc),
             mid_price=0.0,
@@ -24,9 +33,17 @@ class MonitoringService:
             inventory_notional=0.0,
             equity=0.0,
             pnl=0.0,
+            pnl_total=0.0,
+            pnl_daily=0.0,
             drawdown_pct=0.0,
             quote_size_base=0.0,
             quote_size_notional=0.0,
+            run_duration_sec=0.0,
+            total_trade_count=0,
+            total_trade_volume_notional=0.0,
+            total_fee=0.0,
+            total_fee_rebate=0.0,
+            total_fee_cost=0.0,
             maker_fill_count_1m=0,
             cancel_count_1m=0,
             fill_to_cancel_ratio=0.0,
@@ -46,10 +63,22 @@ class MonitoringService:
             "inventory_notional": deque(maxlen=max_points),
             "mid_price": deque(maxlen=max_points),
             "quote_size_notional": deque(maxlen=max_points),
+            "pnl_total": deque(maxlen=max_points),
         }
         self._open_orders: list[OrderSnapshot] = []
         self._recent_trades: list[TradeSnapshot] = []
         self._cancel_events: deque[datetime] = deque(maxlen=max_points * 4)
+
+    def reset_session(self, started_at: datetime | None = None) -> None:
+        self._session_started_at = started_at or datetime.now(timezone.utc)
+        self._total_trade_count = 0
+        self._total_trade_volume_notional = 0.0
+        self._total_fee = 0.0
+        self._total_fee_rebate = 0.0
+        self._total_fee_cost = 0.0
+        self._seen_trade_keys.clear()
+        self._seen_trade_queue.clear()
+        self._cancel_events.clear()
 
     def update_tick(
         self,
@@ -72,6 +101,7 @@ class MonitoringService:
             if cancel_count_1m > 0
             else float(maker_fill_count_1m)
         )
+        run_duration = max(0.0, (now - self._session_started_at).total_seconds())
 
         ages = self._open_order_ages(now)
         time_in_book_p50 = self._percentile(ages, 0.5)
@@ -91,9 +121,17 @@ class MonitoringService:
             inventory_notional=tick.position.notional,
             equity=tick.equity,
             pnl=tick.pnl,
+            pnl_total=tick.pnl_total,
+            pnl_daily=tick.pnl_daily,
             drawdown_pct=drawdown_pct,
             quote_size_base=tick.decision.quote_size_base,
             quote_size_notional=tick.decision.quote_size_notional,
+            run_duration_sec=run_duration,
+            total_trade_count=self._total_trade_count,
+            total_trade_volume_notional=self._total_trade_volume_notional,
+            total_fee=self._total_fee,
+            total_fee_rebate=self._total_fee_rebate,
+            total_fee_cost=self._total_fee_cost,
             maker_fill_count_1m=maker_fill_count_1m,
             cancel_count_1m=cancel_count_1m,
             fill_to_cancel_ratio=fill_to_cancel_ratio,
@@ -113,6 +151,7 @@ class MonitoringService:
         self._series["inventory_notional"].append(TimeSeriesPoint(t=tick.timestamp, value=tick.position.notional))
         self._series["mid_price"].append(TimeSeriesPoint(t=tick.timestamp, value=tick.market.mid))
         self._series["quote_size_notional"].append(TimeSeriesPoint(t=tick.timestamp, value=tick.decision.quote_size_notional))
+        self._series["pnl_total"].append(TimeSeriesPoint(t=tick.timestamp, value=tick.pnl_total))
 
     def record_cancel(self, at: datetime | None = None) -> None:
         self._cancel_events.append(at or datetime.now(timezone.utc))
@@ -121,7 +160,26 @@ class MonitoringService:
         self._open_orders = orders
 
     def update_trades(self, trades: list[TradeSnapshot]) -> None:
-        self._recent_trades = trades[-100:]
+        ordered = sorted(trades, key=lambda t: t.created_at)
+        for trade in ordered:
+            key = str(trade.trade_id or f"{trade.created_at.timestamp()}-{trade.side}-{trade.price}-{trade.size}")
+            if key in self._seen_trade_keys:
+                continue
+            self._seen_trade_keys.add(key)
+            self._seen_trade_queue.append(key)
+            if len(self._seen_trade_queue) > self._seen_trade_limit:
+                old = self._seen_trade_queue.popleft()
+                self._seen_trade_keys.discard(old)
+
+            self._total_trade_count += 1
+            self._total_trade_volume_notional += abs(float(trade.price) * float(trade.size))
+            self._total_fee += float(trade.fee)
+            if trade.fee < 0:
+                self._total_fee_rebate += abs(float(trade.fee))
+            elif trade.fee > 0:
+                self._total_fee_cost += float(trade.fee)
+
+        self._recent_trades = ordered[-100:]
 
     @property
     def summary(self) -> MetricsSummary:

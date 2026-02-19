@@ -30,31 +30,39 @@ class RuntimeConfig(BaseModel):
     symbol: str = "BNB_USDT_Perp"
 
     equity_risk_pct: float = Field(default=0.10, ge=0.001, le=1.0)
-    max_inventory_notional: float = Field(default=2000.0, ge=10)
-    max_single_order_notional: float = Field(default=350.0, ge=1)
+    max_inventory_notional: float = Field(default=2200.0, ge=10)
+    max_inventory_notional_pct: float = Field(default=0.35, ge=0.0, le=5.0)
+    max_single_order_notional: float = Field(default=420.0, ge=1)
 
-    min_spread_bps: float = Field(default=1.2, ge=0.1)
-    max_spread_bps: float = Field(default=8.0, ge=1)
+    min_spread_bps: float = Field(default=0.8, ge=0.1)
+    max_spread_bps: float = Field(default=6.0, ge=1)
 
-    requote_threshold_bps: float = Field(default=0.4, ge=0.1)
+    requote_threshold_bps: float = Field(default=0.3, ge=0.1)
     order_ttl_sec: int = Field(default=15, ge=1, le=300)
-    quote_interval_sec: float = Field(default=0.6, ge=0.2, le=10)
+    quote_interval_sec: float = Field(default=0.45, ge=0.2, le=10)
     min_order_size_base: float = Field(default=0.01, ge=0.000001)
 
     sigma_window_sec: int = Field(default=60, ge=10, le=600)
     depth_window_sec: int = Field(default=30, ge=5, le=300)
     trade_intensity_window_sec: int = Field(default=30, ge=5, le=300)
 
-    drawdown_kill_pct: float = Field(default=10.0, ge=0.1, le=80)
-    volatility_kill_zscore: float = Field(default=4.0, ge=1.0, le=10.0)
+    drawdown_kill_pct: float = Field(default=9.0, ge=0.1, le=80)
+    volatility_kill_zscore: float = Field(default=3.6, ge=1.0, le=10.0)
     max_consecutive_failures: int = Field(default=6, ge=1, le=50)
 
     recovery_readonly_sec: int = Field(default=180, ge=10, le=1800)
 
-    base_gamma: float = Field(default=0.12, ge=0.01, le=5.0)
+    base_gamma: float = Field(default=0.10, ge=0.01, le=5.0)
     gamma_min: float = Field(default=0.02, ge=0.001, le=2.0)
     gamma_max: float = Field(default=0.8, ge=0.01, le=10.0)
     liquidity_k: float = Field(default=1.5, ge=0.1, le=30.0)
+
+    tg_heartbeat_enabled: bool = True
+    tg_heartbeat_interval_sec: int = Field(default=1800, ge=60, le=86400)
+
+    close_retry_base_delay_sec: float = Field(default=0.5, ge=0.05, le=60.0)
+    close_retry_max_delay_sec: float = Field(default=8.0, ge=0.1, le=300.0)
+    close_position_epsilon_base: float = Field(default=0.0001, ge=0.0, le=1.0)
 
     @field_validator("max_spread_bps")
     @classmethod
@@ -131,6 +139,7 @@ class TradeView(BaseModel):
     price: float
     size: float
     fee: float = 0.0
+    fee_side: Literal["rebate", "cost", "flat"] = "flat"
     created_at: datetime
 
 
@@ -146,9 +155,17 @@ class MetricsSummary(BaseModel):
     inventory_notional: float
     equity: float
     pnl: float
+    pnl_total: float = 0.0
+    pnl_daily: float = 0.0
     drawdown_pct: float
     quote_size_base: float
     quote_size_notional: float
+    run_duration_sec: float = 0.0
+    total_trade_count: int = 0
+    total_trade_volume_notional: float = 0.0
+    total_fee: float = 0.0
+    total_fee_rebate: float = 0.0
+    total_fee_cost: float = 0.0
     maker_fill_count_1m: int = 0
     cancel_count_1m: int = 0
     fill_to_cancel_ratio: float = 0.0

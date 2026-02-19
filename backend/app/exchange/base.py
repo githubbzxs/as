@@ -51,3 +51,17 @@ class ExchangeAdapter(ABC):
     @abstractmethod
     async def cancel_all_orders(self, symbol: str) -> None:
         """全撤。"""
+
+    @abstractmethod
+    async def close_position_taker(
+        self,
+        symbol: str,
+        side: str,
+        size: float,
+        reduce_only: bool = True,
+    ) -> OrderSnapshot:
+        """按 taker 方式提交平仓单。"""
+
+    @abstractmethod
+    async def flatten_position_taker(self, symbol: str) -> None:
+        """读取净仓并执行 taker 全平。"""

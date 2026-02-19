@@ -34,26 +34,27 @@ def profile_to_runtime_config(profile: RuntimeProfileConfig, current: RuntimeCon
     r = _to_ratio(profile.risk_threshold)
 
     # 成交优先：高激进度时明显收窄价差和重报价门槛。
-    min_spread_bps = 0.8 + (1.0 - a) * 5.2
-    max_spread_bps = 6.0 + (1.0 - a) * 29.0
+    min_spread_bps = 0.35 + (1.0 - a) * 3.2
+    max_spread_bps = 2.2 + (1.0 - a) * 16.0
     if max_spread_bps < min_spread_bps + 1.0:
         max_spread_bps = min_spread_bps + 1.0
 
     merged = current.model_dump()
     merged.update(
         {
-            "base_gamma": 0.30 - 0.24 * a,
+            "base_gamma": 0.18 - 0.14 * a,
             "min_spread_bps": min_spread_bps,
             "max_spread_bps": max_spread_bps,
-            "requote_threshold_bps": 0.3 + (1.0 - a) * 1.5,
-            "quote_interval_sec": 0.45 + (1.0 - a) * 1.35,
-            "max_inventory_notional": 500.0 + i * 7500.0,
-            "max_single_order_notional": 80.0 + i * 520.0,
-            "equity_risk_pct": 0.02 + i * 0.18,
-            "drawdown_kill_pct": 4.0 + r * 10.0,
-            "volatility_kill_zscore": 2.0 + r * 4.0,
-            "max_consecutive_failures": int(round(2 + r * 10)),
-            "recovery_readonly_sec": int(round(300 - r * 240)),
+            "requote_threshold_bps": 0.15 + (1.0 - a) * 0.95,
+            "quote_interval_sec": 0.25 + (1.0 - a) * 0.85,
+            "max_inventory_notional_pct": 0.05 + i * 1.45,
+            "max_inventory_notional": 500.0 + i * 12000.0,
+            "max_single_order_notional": 120.0 + i * 680.0,
+            "equity_risk_pct": 0.03 + i * 0.22,
+            "drawdown_kill_pct": 3.0 + r * 9.0,
+            "volatility_kill_zscore": 1.6 + r * 3.4,
+            "max_consecutive_failures": int(round(2 + r * 12)),
+            "recovery_readonly_sec": int(round(300 - r * 250)),
         }
     )
 
@@ -65,25 +66,26 @@ def runtime_to_profile_config(config: RuntimeConfig) -> RuntimeProfileConfig:
 
     aggressiveness = _avg(
         [
-            _to_score(config.base_gamma, 0.06, 0.30, inverse=True),
-            _to_score(config.min_spread_bps, 0.8, 6.0, inverse=True),
-            _to_score(config.quote_interval_sec, 0.45, 1.8, inverse=True),
-            _to_score(config.requote_threshold_bps, 0.3, 1.8, inverse=True),
+            _to_score(config.base_gamma, 0.04, 0.18, inverse=True),
+            _to_score(config.min_spread_bps, 0.35, 3.55, inverse=True),
+            _to_score(config.quote_interval_sec, 0.25, 1.10, inverse=True),
+            _to_score(config.requote_threshold_bps, 0.15, 1.10, inverse=True),
         ]
     )
     inventory_tolerance = _avg(
         [
-            _to_score(config.max_inventory_notional, 500.0, 8000.0),
-            _to_score(config.max_single_order_notional, 80.0, 600.0),
-            _to_score(config.equity_risk_pct, 0.02, 0.20),
+            _to_score(config.max_inventory_notional_pct, 0.05, 1.50),
+            _to_score(config.max_inventory_notional, 500.0, 12500.0),
+            _to_score(config.max_single_order_notional, 120.0, 800.0),
+            _to_score(config.equity_risk_pct, 0.03, 0.25),
         ]
     )
     risk_threshold = _avg(
         [
-            _to_score(config.drawdown_kill_pct, 4.0, 14.0),
-            _to_score(config.volatility_kill_zscore, 2.0, 6.0),
-            _to_score(float(config.max_consecutive_failures), 2.0, 12.0),
-            _to_score(float(config.recovery_readonly_sec), 60.0, 300.0, inverse=True),
+            _to_score(config.drawdown_kill_pct, 3.0, 12.0),
+            _to_score(config.volatility_kill_zscore, 1.6, 5.0),
+            _to_score(float(config.max_consecutive_failures), 2.0, 14.0),
+            _to_score(float(config.recovery_readonly_sec), 50.0, 300.0, inverse=True),
         ]
     )
 
@@ -104,6 +106,7 @@ def runtime_to_profile_view(config: RuntimeConfig) -> RuntimeProfileView:
             "base_gamma": config.base_gamma,
             "min_spread_bps": config.min_spread_bps,
             "max_spread_bps": config.max_spread_bps,
+            "max_inventory_notional_pct": config.max_inventory_notional_pct,
             "max_inventory_notional": config.max_inventory_notional,
             "drawdown_kill_pct": config.drawdown_kill_pct,
         },

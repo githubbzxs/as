@@ -39,6 +39,7 @@ async def recent_trades(container=Depends(get_container)) -> list[TradeView]:
             price=t.price,
             size=t.size,
             fee=t.fee,
+            fee_side="rebate" if t.fee < 0 else ("cost" if t.fee > 0 else "flat"),
             created_at=t.created_at,
         )
         for t in rows
