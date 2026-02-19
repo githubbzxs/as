@@ -64,6 +64,8 @@ class EngineTick:
     pnl: float
     sigma: float
     sigma_zscore: float
+    distance_bid_bps: float = 0.0
+    distance_ask_bps: float = 0.0
 
 
 

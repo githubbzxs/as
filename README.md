@@ -2,7 +2,7 @@
 
 基于 Avellaneda-Stoikov（AS）模型的量化做市程序，支持：
 
-- GRVT（真实接口 + Mock 联调模式）
+- GRVT（真实接口）
 - 7x24 自动做市（只读预热 + 自动恢复）
 - Post-only 限价下单
 - 三重熔断（连续失败/回撤/异常波动）
@@ -19,7 +19,7 @@ backend/
     api/               # FastAPI 路由
     core/              # 配置、鉴权、依赖
     engine/            # AS 模型、自适应、风控、主引擎
-    exchange/          # GRVT 适配层（live/mock）
+    exchange/          # GRVT 适配层（live）
     services/          # 监控、事件总线、告警、运行配置
   tests/               # 单元测试
 frontend/
@@ -77,8 +77,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 
 关键变量：
 
-- `GRVT_USE_MOCK`：`true` 表示模拟交易所，`false` 表示真实 GRVT
-- `GRVT_ENV`：`testnet/prod/staging/dev`
+- `GRVT_ENV`：默认固定 `prod`（实盘）
 - `GRVT_API_KEY`
 - `GRVT_API_SECRET`
 - `GRVT_TRADING_ACCOUNT_ID`
@@ -88,6 +87,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `EXCHANGE_CONFIG_PATH`：交易所连接配置持久化文件
+- `TELEGRAM_CONFIG_PATH`：Telegram 配置持久化文件
 
 ## API 概览
 
@@ -104,6 +104,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 - `PUT /api/config/runtime/profile`
 - `GET /api/config/exchange`
 - `PUT /api/config/exchange`
+- `GET /api/config/telegram`
+- `PUT /api/config/telegram`
 - `GET /api/config/secrets/status`
 - `WS /ws/stream?token=...`
 
@@ -111,7 +113,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 
 - 参数面板默认采用“三旋钮自动模式”：`做市激进度`、`库存容忍度`、`风险阈值`
 - 后端会将三旋钮映射到内部运行参数，并继续执行实时自适应
-- API 配置保存后密钥不会回显，仅展示“已配置/未配置”
+- 实盘环境固定为 `prod`，UI 不提供环境切换入口
+- API/TG 配置保存后密钥不会回显，仅展示“已配置/未配置”
 - 当引擎状态不是 `idle/halted` 时，`PUT /api/config/exchange` 会返回 `409`，避免运行中误改凭证
 
 ## 测试

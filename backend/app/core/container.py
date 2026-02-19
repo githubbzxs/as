@@ -10,6 +10,7 @@ from app.services.event_bus import EventBus
 from app.services.exchange_config import ExchangeConfigStore
 from app.services.monitoring import MonitoringService
 from app.services.runtime_config import RuntimeConfigStore
+from app.services.telegram_config import TelegramConfigStore
 
 
 @dataclass(slots=True)
@@ -18,6 +19,7 @@ class AppContainer:
     adapter: ExchangeAdapter
     config_store: RuntimeConfigStore
     exchange_config_store: ExchangeConfigStore
+    telegram_config_store: TelegramConfigStore
     monitor: MonitoringService
     event_bus: EventBus
     alert_service: AlertService

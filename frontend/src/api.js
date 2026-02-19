@@ -72,6 +72,18 @@ export async function updateExchangeConfig(token, payload) {
   });
 }
 
+export async function fetchTelegramConfig(token) {
+  return apiRequest("/api/config/telegram", { token });
+}
+
+export async function updateTelegramConfig(token, payload) {
+  return apiRequest("/api/config/telegram", {
+    method: "PUT",
+    token,
+    body: payload,
+  });
+}
+
 export async function fetchSecretsStatus(token) {
   return apiRequest("/api/config/secrets/status", { token });
 }

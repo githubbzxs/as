@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
 import math
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from app.engine.adaptive import AdaptiveController
@@ -17,6 +18,12 @@ from app.services.alerting import AlertService
 from app.services.event_bus import EventBus
 from app.services.monitoring import MonitoringService
 from app.services.runtime_config import RuntimeConfigStore
+
+
+@dataclass(slots=True)
+class SyncResult:
+    requoted: bool
+    reason: str = "none"
 
 
 class StrategyEngine:
@@ -196,11 +203,21 @@ class StrategyEngine:
                     self._mode = "running"
                     await self._alert.send("Engine", "只读预热结束，开始自动做市")
 
+                sync_result = SyncResult(requoted=False, reason="none")
                 if self._mode == "running":
-                    await self._sync_orders(cfg, position, decision)
+                    sync_result = await self._sync_orders(cfg, position, decision)
+                    if sync_result.requoted:
+                        self._monitor.record_cancel(utcnow())
+
+                open_orders = await self._adapter.fetch_open_orders(cfg.symbol)
+                recent_trades = await self._adapter.fetch_recent_trades(cfg.symbol, 100)
+                self._monitor.update_orders(open_orders)
+                self._monitor.update_trades(recent_trades)
 
                 pnl = equity - (self._initial_equity or equity)
                 drawdown = self._risk.update_drawdown(equity)
+                distance_bid_bps = self._distance_from_bid_bps(market.bid, decision.bid_price)
+                distance_ask_bps = self._distance_from_ask_bps(market.ask, decision.ask_price)
                 engine_tick = EngineTick(
                     timestamp=utcnow(),
                     market=market,
@@ -210,18 +227,22 @@ class StrategyEngine:
                     pnl=pnl,
                     sigma=sigma,
                     sigma_zscore=sigma_z,
+                    distance_bid_bps=distance_bid_bps,
+                    distance_ask_bps=distance_ask_bps,
                 )
-                self._monitor.update_tick(engine_tick, drawdown, self._mode, self._consecutive_failures)
+                self._monitor.update_tick(
+                    engine_tick,
+                    drawdown,
+                    self._mode,
+                    self._consecutive_failures,
+                    requote_reason=sync_result.reason,
+                )
 
-                open_orders = await self._adapter.fetch_open_orders(cfg.symbol)
-                recent_trades = await self._adapter.fetch_recent_trades(cfg.symbol, 100)
-                self._monitor.update_orders(open_orders)
-                self._monitor.update_trades(recent_trades)
-
+                summary = self._monitor.summary
                 await self._event_bus.publish(
                     "tick",
                     {
-                        "summary": self._monitor.summary.model_dump(mode="json"),
+                        "summary": summary.model_dump(mode="json"),
                         "open_orders": [
                             {
                                 "order_id": o.order_id,
@@ -233,6 +254,15 @@ class StrategyEngine:
                             }
                             for o in open_orders
                         ],
+                        "diagnostics": {
+                            "target_bid": decision.bid_price,
+                            "target_ask": decision.ask_price,
+                            "distance_bid_bps": distance_bid_bps,
+                            "distance_ask_bps": distance_ask_bps,
+                            "requote_reason": sync_result.reason,
+                            "open_order_age_buy_sec": summary.open_order_age_buy_sec,
+                            "open_order_age_sell_sec": summary.open_order_age_sell_sec,
+                        },
                     },
                 )
 
@@ -258,18 +288,20 @@ class StrategyEngine:
                 raise
             except Exception as exc:
                 self._consecutive_failures += 1
-                self._last_error = str(exc)
+                category = self._classify_error(exc)
+                self._last_error = f"[{category}] {exc}"
                 self._last_status_at = utcnow()
                 self._exchange_connected = False
-                self._logger.exception("主循环异常: %s", exc)
+                self._logger.exception("主循环异常(%s): %s", category, exc)
                 await self._event_bus.publish(
                     "error",
                     {
                         "message": str(exc),
+                        "category": category,
                         "consecutive_failures": self._consecutive_failures,
                     },
                 )
-                await self._alert.send("EngineError", str(exc))
+                await self._alert.send("EngineError", f"[{category}] {exc}")
 
             elapsed = (utcnow() - tick_started).total_seconds()
             sleep_for = max(0.01, cfg.quote_interval_sec - elapsed)
@@ -285,7 +317,7 @@ class StrategyEngine:
         if decision.bid_price >= decision.ask_price:
             decision.ask_price = decision.bid_price + min_tick
 
-    async def _sync_orders(self, cfg: RuntimeConfig, position: PositionSnapshot, decision: QuoteDecision) -> None:
+    async def _sync_orders(self, cfg: RuntimeConfig, position: PositionSnapshot, decision: QuoteDecision) -> SyncResult:
         orders = await self._adapter.fetch_open_orders(cfg.symbol)
         buy_order = next((o for o in orders if o.side == "buy"), None)
         sell_order = next((o for o in orders if o.side == "sell"), None)
@@ -294,23 +326,25 @@ class StrategyEngine:
         only_sell = position.notional > max_inventory
         only_buy = position.notional < -max_inventory
 
-        need_requote = False
-        if not buy_order and not only_sell:
-            need_requote = True
-        if not sell_order and not only_buy:
-            need_requote = True
-
-        if buy_order and self._price_deviation_bps(buy_order.price, decision.bid_price) > cfg.requote_threshold_bps:
-            need_requote = True
-        if sell_order and self._price_deviation_bps(sell_order.price, decision.ask_price) > cfg.requote_threshold_bps:
-            need_requote = True
-
+        buy_dev = bool(
+            buy_order and self._price_deviation_bps(buy_order.price, decision.bid_price) > cfg.requote_threshold_bps
+        )
+        sell_dev = bool(
+            sell_order and self._price_deviation_bps(sell_order.price, decision.ask_price) > cfg.requote_threshold_bps
+        )
         ttl_expired = any((utcnow() - o.created_at).total_seconds() > cfg.order_ttl_sec for o in orders)
-        if ttl_expired:
-            need_requote = True
 
-        if not need_requote:
-            return
+        reasons = self._collect_requote_reasons(
+            buy_order=buy_order,
+            sell_order=sell_order,
+            only_sell=only_sell,
+            only_buy=only_buy,
+            buy_dev=buy_dev,
+            sell_dev=sell_dev,
+            ttl_expired=ttl_expired,
+        )
+        if not reasons:
+            return SyncResult(requoted=False, reason="none")
 
         await self._adapter.cancel_all_orders(cfg.symbol)
 
@@ -322,7 +356,7 @@ class StrategyEngine:
                     price=decision.bid_price,
                     size=decision.quote_size_base,
                     post_only=True,
-                    client_order_id=f"bid-{uuid.uuid4().hex[:16]}",
+                    client_order_id=self._new_client_order_id("buy"),
                 )
             if not only_buy:
                 await self._adapter.place_limit_order(
@@ -331,15 +365,73 @@ class StrategyEngine:
                     price=decision.ask_price,
                     size=decision.quote_size_base,
                     post_only=True,
-                    client_order_id=f"ask-{uuid.uuid4().hex[:16]}",
+                    client_order_id=self._new_client_order_id("sell"),
                 )
             self._consecutive_failures = 0
+            return SyncResult(requoted=True, reason=",".join(reasons))
         except Exception:
             self._consecutive_failures += 1
             raise
+
+    @staticmethod
+    def _collect_requote_reasons(
+        *,
+        buy_order,
+        sell_order,
+        only_sell: bool,
+        only_buy: bool,
+        buy_dev: bool,
+        sell_dev: bool,
+        ttl_expired: bool,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if only_sell or only_buy:
+            reasons.append("inventory-limit")
+        if not buy_order and not only_sell:
+            reasons.append("missing-side-buy")
+        if not sell_order and not only_buy:
+            reasons.append("missing-side-sell")
+        if buy_dev:
+            reasons.append("price-deviation-buy")
+        if sell_dev:
+            reasons.append("price-deviation-sell")
+        if ttl_expired:
+            reasons.append("ttl-expired")
+        return reasons
+
+    @staticmethod
+    def _new_client_order_id(side: str) -> str:
+        # 使用纯数字，规避部分 SDK 在解析 client_order_id 时的 int 转换异常。
+        side_flag = "1" if side == "buy" else "2"
+        nonce = int(utcnow().timestamp() * 1_000_000)
+        suffix = uuid.uuid4().int % 1_000_000
+        return f"{side_flag}{nonce}{suffix:06d}"
+
+    @staticmethod
+    def _classify_error(exc: Exception) -> str:
+        text = str(exc).lower()
+        if "event_time" in text or "malformed syntax" in text or "order_book" in text or "ticker" in text:
+            return "market_data"
+        if "invalid literal for int" in text or "order_id" in text:
+            return "order_id"
+        if "trading_account_id" in text or "api_key" in text or "unauthorized" in text or "forbidden" in text:
+            return "auth"
+        return "unknown"
 
     @staticmethod
     def _price_deviation_bps(old: float, new: float) -> float:
         if old <= 0:
             return math.inf
         return abs(new - old) / old * 10000
+
+    @staticmethod
+    def _distance_from_bid_bps(best_bid: float, bid_price: float) -> float:
+        if best_bid <= 0:
+            return 0.0
+        return max(0.0, (best_bid - bid_price) / best_bid * 10000)
+
+    @staticmethod
+    def _distance_from_ask_bps(best_ask: float, ask_price: float) -> float:
+        if best_ask <= 0:
+            return 0.0
+        return max(0.0, (ask_price - best_ask) / best_ask * 10000)

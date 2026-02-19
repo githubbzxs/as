@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -57,16 +57,29 @@ class GrvtLiveAdapter(ExchangeAdapter):
 
     async def ping(self) -> bool:
         try:
-            symbol = "BTC_USDT-PERP"
+            symbol = "BTC_USDT_Perp"
             await asyncio.to_thread(self._client.fetch_ticker, symbol)
             return True
         except Exception:
             return False
 
     async def fetch_market_snapshot(self, symbol: str) -> MarketSnapshot:
-        ticker_task = asyncio.to_thread(self._client.fetch_ticker, symbol)
-        ob_task = asyncio.to_thread(self._client.fetch_order_book, symbol, 10)
-        ticker, order_book = await asyncio.gather(ticker_task, ob_task)
+        ex_symbol = self._normalize_symbol(symbol)
+        ticker_result, ob_result = await asyncio.gather(
+            asyncio.to_thread(self._client.fetch_ticker, ex_symbol),
+            asyncio.to_thread(self._client.fetch_order_book, ex_symbol, 10),
+            return_exceptions=True,
+        )
+
+        if isinstance(ticker_result, Exception):
+            raise ticker_result
+
+        ticker = ticker_result
+        order_book: dict[str, Any] = {}
+        if isinstance(ob_result, Exception):
+            self._logger.warning("读取 order_book 失败，降级为 ticker-only: %s", ob_result)
+        elif isinstance(ob_result, dict):
+            order_book = ob_result
 
         bids = order_book.get("bids", []) if isinstance(order_book, dict) else []
         asks = order_book.get("asks", []) if isinstance(order_book, dict) else []
@@ -90,7 +103,7 @@ class GrvtLiveAdapter(ExchangeAdapter):
         trade_intensity = max(0.2, min(3.5, (buy_vol + sell_vol) / max(1.0, mid) / 20.0))
 
         return MarketSnapshot(
-            symbol=symbol,
+            symbol=ex_symbol,
             bid=best_bid,
             ask=best_ask,
             mid=mid,
@@ -108,12 +121,13 @@ class GrvtLiveAdapter(ExchangeAdapter):
         return float(total or 0.0)
 
     async def fetch_position(self, symbol: str) -> PositionSnapshot:
-        positions = await asyncio.to_thread(self._client.fetch_positions, [symbol])
+        ex_symbol = self._normalize_symbol(symbol)
+        positions = await asyncio.to_thread(self._client.fetch_positions, [ex_symbol])
         base_position = 0.0
         notional = 0.0
         for item in positions or []:
             instrument = str(item.get("instrument", ""))
-            if instrument != symbol:
+            if not self._symbol_equal(instrument, ex_symbol):
                 continue
             size = self._decode_fixed(item.get("size", 0.0))
             is_long = bool(item.get("is_long", True))
@@ -121,17 +135,20 @@ class GrvtLiveAdapter(ExchangeAdapter):
             base_position += signed_size
             mark_price = self._decode_fixed(item.get("mark_price", 0.0))
             notional += signed_size * mark_price
-        return PositionSnapshot(symbol=symbol, base_position=base_position, notional=notional)
+        return PositionSnapshot(symbol=ex_symbol, base_position=base_position, notional=notional)
 
     async def fetch_open_orders(self, symbol: str) -> list[OrderSnapshot]:
-        orders = await asyncio.to_thread(self._client.fetch_open_orders, symbol)
+        ex_symbol = self._normalize_symbol(symbol)
+        orders = await asyncio.to_thread(self._client.fetch_open_orders, ex_symbol)
         results: list[OrderSnapshot] = []
         for order in orders or []:
+            if not isinstance(order, dict):
+                continue
             side = self._parse_side(order)
             leg = self._first_leg(order)
             price = self._decode_fixed(leg.get("limit_price", 0.0))
             size = self._decode_fixed(leg.get("size", 0.0))
-            order_id = str(order.get("order_id") or order.get("id") or order.get("metadata", {}).get("client_order_id", ""))
+            order_id = self._extract_order_id(order)
             created_at = self._parse_dt(order.get("create_time_ns") or order.get("created_at"))
             status = str(order.get("state", "open")).lower()
             if not order_id:
@@ -149,10 +166,13 @@ class GrvtLiveAdapter(ExchangeAdapter):
         return results
 
     async def fetch_recent_trades(self, symbol: str, limit: int = 50) -> list[TradeSnapshot]:
-        data = await asyncio.to_thread(self._client.fetch_my_trades, symbol, None, limit, {})
+        ex_symbol = self._normalize_symbol(symbol)
+        data = await asyncio.to_thread(self._client.fetch_my_trades, ex_symbol, None, limit, {})
         rows = data.get("result", []) if isinstance(data, dict) else []
         trades: list[TradeSnapshot] = []
         for row in rows[-limit:]:
+            if not isinstance(row, dict):
+                continue
             side = "buy" if bool(row.get("is_taker_buyer", True)) else "sell"
             trades.append(
                 TradeSnapshot(
@@ -175,20 +195,21 @@ class GrvtLiveAdapter(ExchangeAdapter):
         post_only: bool,
         client_order_id: str,
     ) -> OrderSnapshot:
+        ex_symbol = self._normalize_symbol(symbol)
         params = {
             "post_only": bool(post_only),
             "client_order_id": client_order_id,
         }
         result = await asyncio.to_thread(
             self._client.create_order,
-            symbol,
+            ex_symbol,
             "limit",
             "buy" if side == "buy" else "sell",
             size,
             price,
             params,
         )
-        oid = str(result.get("order_id") or result.get("id") or result.get("metadata", {}).get("client_order_id") or client_order_id)
+        oid = self._extract_order_id(result if isinstance(result, dict) else {}) or str(client_order_id)
         return OrderSnapshot(
             order_id=oid,
             side="buy" if side == "buy" else "sell",
@@ -199,10 +220,12 @@ class GrvtLiveAdapter(ExchangeAdapter):
         )
 
     async def cancel_order(self, symbol: str, order_id: str) -> None:
-        await asyncio.to_thread(self._client.cancel_order, order_id, symbol, {})
+        ex_symbol = self._normalize_symbol(symbol)
+        await asyncio.to_thread(self._client.cancel_order, order_id, ex_symbol, {})
 
     async def cancel_all_orders(self, symbol: str) -> None:
-        await asyncio.to_thread(self._client.cancel_all_orders, {"symbol": symbol})
+        ex_symbol = self._normalize_symbol(symbol)
+        await asyncio.to_thread(self._client.cancel_all_orders, {"symbol": ex_symbol})
 
     def _decode_fixed(self, value: Any) -> float:
         if value is None:
@@ -223,6 +246,22 @@ class GrvtLiveAdapter(ExchangeAdapter):
             return self._decode_fixed(level.get(key, 0.0))
         return 0.0
 
+    @staticmethod
+    def _extract_order_id(payload: dict[str, Any]) -> str:
+        candidates: list[Any] = [
+            payload.get("order_id"),
+            payload.get("id"),
+            payload.get("metadata", {}).get("order_id") if isinstance(payload.get("metadata"), dict) else None,
+            payload.get("metadata", {}).get("client_order_id") if isinstance(payload.get("metadata"), dict) else None,
+        ]
+        for value in candidates:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return ""
+
     def _first_leg(self, order: dict) -> dict:
         legs = order.get("legs") if isinstance(order, dict) else None
         if isinstance(legs, list) and legs:
@@ -241,10 +280,27 @@ class GrvtLiveAdapter(ExchangeAdapter):
         if raw is None:
             return datetime.now(timezone.utc)
         try:
-            txt = str(raw)
-            if len(txt) >= 19 and txt.isdigit():
-                ns = int(txt)
-                return datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc)
+            txt = str(raw).strip()
+            if txt.isdigit():
+                if len(txt) >= 19:
+                    ns = int(txt)
+                    return datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc)
+                if len(txt) >= 13:
+                    ms = int(txt)
+                    return datetime.fromtimestamp(ms / 1_000, tz=timezone.utc)
+                sec = int(txt)
+                return datetime.fromtimestamp(sec, tz=timezone.utc)
         except Exception:
             pass
         return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        normalized = str(symbol or "").strip().replace("-", "_")
+        if normalized.upper().endswith("_PERP"):
+            normalized = f"{normalized[:-5]}_Perp"
+        return normalized
+
+    @classmethod
+    def _symbol_equal(cls, left: str, right: str) -> bool:
+        return cls._normalize_symbol(left).lower() == cls._normalize_symbol(right).lower()

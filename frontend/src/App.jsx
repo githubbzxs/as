@@ -7,11 +7,13 @@ import {
   fetchRuntimeProfile,
   fetchSecretsStatus,
   fetchStatus,
+  fetchTelegramConfig,
   login,
   startEngine,
   stopEngine,
   updateExchangeConfig,
   updateRuntimeProfile,
+  updateTelegramConfig,
 } from "./api";
 
 const initialLogin = { username: "admin", password: "" };
@@ -33,6 +35,13 @@ const profileFieldMeta = [
     hint: "越高越宽松，熔断阈值更高、只读恢复更快。",
   },
 ];
+
+const wsStateMeta = {
+  connecting: { label: "连接中", className: "ws-connecting" },
+  connected: { label: "已连接", className: "ws-connected" },
+  reconnecting: { label: "重连中", className: "ws-reconnecting" },
+  disconnected: { label: "未连接", className: "ws-disconnected" },
+};
 
 function fmt(value, digits = 4) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
@@ -143,13 +152,12 @@ export default function App() {
   const [metrics, setMetrics] = useState(null);
   const [runtimeProfile, setRuntimeProfile] = useState(null);
   const [exchangeConfig, setExchangeConfig] = useState(null);
+  const [telegramConfig, setTelegramConfig] = useState(null);
   const [secrets, setSecrets] = useState(null);
   const [orders, setOrders] = useState([]);
   const [trades, setTrades] = useState([]);
 
   const [apiForm, setApiForm] = useState({
-    grvt_env: "testnet",
-    grvt_use_mock: true,
     grvt_api_key: "",
     grvt_api_secret: "",
     grvt_trading_account_id: "",
@@ -157,11 +165,19 @@ export default function App() {
     clear_grvt_api_secret: false,
     clear_grvt_trading_account_id: false,
   });
+  const [telegramForm, setTelegramForm] = useState({
+    telegram_bot_token: "",
+    telegram_chat_id: "",
+    clear_telegram_bot_token: false,
+    clear_telegram_chat_id: false,
+  });
 
   const [profileSaving, setProfileSaving] = useState(false);
   const [exchangeSaving, setExchangeSaving] = useState(false);
+  const [telegramSaving, setTelegramSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [wsState, setWsState] = useState("disconnected");
 
   async function handleLogin(username, password) {
     setAuthLoading(true);
@@ -190,24 +206,31 @@ export default function App() {
 
   async function loadConfigData() {
     if (!token) return;
-    const [profileRes, exchangeRes, secretRes] = await Promise.all([
+    const [profileRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
       fetchRuntimeProfile(token),
       fetchExchangeConfig(token),
+      fetchTelegramConfig(token),
       fetchSecretsStatus(token),
     ]);
     setRuntimeProfile(profileRes);
     setExchangeConfig(exchangeRes);
+    setTelegramConfig(telegramRes);
     setSecrets(secretRes);
     setApiForm((prev) => ({
       ...prev,
-      grvt_env: exchangeRes.grvt_env,
-      grvt_use_mock: exchangeRes.grvt_use_mock,
       grvt_api_key: "",
       grvt_api_secret: "",
       grvt_trading_account_id: "",
       clear_grvt_api_key: false,
       clear_grvt_api_secret: false,
       clear_grvt_trading_account_id: false,
+    }));
+    setTelegramForm((prev) => ({
+      ...prev,
+      telegram_bot_token: "",
+      telegram_chat_id: "",
+      clear_telegram_bot_token: false,
+      clear_telegram_chat_id: false,
     }));
   }
 
@@ -242,28 +265,71 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/stream?token=${token}`);
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === "tick" && msg.payload?.summary) {
-          setMetrics((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              summary: msg.payload.summary,
-            };
-          });
+    let ws = null;
+    let retryTimer = null;
+    let stopped = false;
+    let retryCount = 0;
+
+    const connect = () => {
+      if (stopped) return;
+      setWsState(retryCount === 0 ? "connecting" : "reconnecting");
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${window.location.host}/ws/stream?token=${token}`);
+
+      ws.onopen = () => {
+        retryCount = 0;
+        setWsState("connected");
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "tick" && msg.payload?.summary) {
+            setMetrics((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                summary: msg.payload.summary,
+              };
+            });
+            if (Array.isArray(msg.payload?.open_orders)) {
+              setOrders(msg.payload.open_orders);
+            }
+          }
+        } catch {
+          // 忽略非关键消息
         }
-      } catch {
-        // 忽略非关键消息
-      }
+      };
+
+      ws.onerror = () => {
+        // 交给 onclose 统一处理，避免重复错误横幅
+      };
+
+      ws.onclose = (evt) => {
+        if (stopped) return;
+        if (evt.code === 4401) {
+          setWsState("disconnected");
+          setError("登录状态已失效，请重新登录");
+          localStorage.removeItem("mm_token");
+          setToken("");
+          return;
+        }
+
+        setWsState("reconnecting");
+        const delay = Math.min(10000, 1000 * 2 ** Math.min(retryCount, 4));
+        retryCount += 1;
+        retryTimer = setTimeout(connect, delay);
+      };
     };
-    ws.onerror = () => {
-      setError("WebSocket 连接异常");
+
+    connect();
+
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (ws) ws.close();
+      setWsState("disconnected");
     };
-    return () => ws.close();
   }, [token]);
 
   async function commandStart() {
@@ -310,15 +376,13 @@ export default function App() {
 
   async function saveExchange() {
     if (!canEditApi) {
-      setError("引擎运行中禁止修改 API 配置，请先停止引擎");
+      setError("引擎运行中禁止修改配置，请先停止引擎");
       return;
     }
     setExchangeSaving(true);
     setNotice("");
     try {
       const payload = {
-        grvt_env: apiForm.grvt_env,
-        grvt_use_mock: apiForm.grvt_use_mock,
         grvt_api_key: apiForm.grvt_api_key,
         grvt_api_secret: apiForm.grvt_api_secret,
         grvt_trading_account_id: apiForm.grvt_trading_account_id,
@@ -329,11 +393,36 @@ export default function App() {
       const updated = await updateExchangeConfig(token, payload);
       setExchangeConfig(updated);
       await loadConfigData();
-      setNotice("API 配置已保存");
+      setNotice("实盘 API 配置已保存");
     } catch (err) {
-      setError(err.message || "保存 API 配置失败");
+      setError(err.message || "保存实盘 API 配置失败");
     } finally {
       setExchangeSaving(false);
+    }
+  }
+
+  async function saveTelegram() {
+    if (!canEditApi) {
+      setError("引擎运行中禁止修改配置，请先停止引擎");
+      return;
+    }
+    setTelegramSaving(true);
+    setNotice("");
+    try {
+      const payload = {
+        telegram_bot_token: telegramForm.telegram_bot_token,
+        telegram_chat_id: telegramForm.telegram_chat_id,
+        clear_telegram_bot_token: telegramForm.clear_telegram_bot_token,
+        clear_telegram_chat_id: telegramForm.clear_telegram_chat_id,
+      };
+      const updated = await updateTelegramConfig(token, payload);
+      setTelegramConfig(updated);
+      await loadConfigData();
+      setNotice("Telegram 告警配置已保存");
+    } catch (err) {
+      setError(err.message || "保存 Telegram 配置失败");
+    } finally {
+      setTelegramSaving(false);
     }
   }
 
@@ -348,6 +437,7 @@ export default function App() {
 
   const summary = metrics?.summary;
   const series = metrics?.series || {};
+  const wsMeta = wsStateMeta[wsState] || wsStateMeta.disconnected;
 
   return (
     <div className="page">
@@ -376,6 +466,10 @@ export default function App() {
           <strong>{status?.mode || "-"}</strong>
         </div>
         <div className="card">
+          <span>WS 连接</span>
+          <strong className={wsMeta.className}>{wsMeta.label}</strong>
+        </div>
+        <div className="card">
           <span>账户权益</span>
           <strong>{fmt(summary?.equity, 2)}</strong>
         </div>
@@ -401,6 +495,56 @@ export default function App() {
         <LineChart title="Sigma" points={series.sigma} color="#0ea5e9" />
         <LineChart title="Spread(bps)" points={series.spread_bps} color="#f97316" />
         <LineChart title="Inventory Notional" points={series.inventory_notional} color="#22c55e" />
+        <LineChart title="Bid Distance(bps)" points={series.distance_bid_bps} color="#2563eb" />
+        <LineChart title="Ask Distance(bps)" points={series.distance_ask_bps} color="#7c3aed" />
+      </section>
+
+      <section className="diagnostics-grid">
+        <div className="panel diagnostics-panel">
+          <h2>成交诊断</h2>
+          <div className="diagnostics-list">
+            <div>
+              <span>重报价原因</span>
+              <strong>{summary?.requote_reason || "-"}</strong>
+            </div>
+            <div>
+              <span>Bid 距盘口 (bps)</span>
+              <strong>{fmt(summary?.distance_bid_bps, 3)}</strong>
+            </div>
+            <div>
+              <span>Ask 距盘口 (bps)</span>
+              <strong>{fmt(summary?.distance_ask_bps, 3)}</strong>
+            </div>
+            <div>
+              <span>1分钟成交数</span>
+              <strong>{fmt(summary?.maker_fill_count_1m, 0)}</strong>
+            </div>
+            <div>
+              <span>1分钟撤单数</span>
+              <strong>{fmt(summary?.cancel_count_1m, 0)}</strong>
+            </div>
+            <div>
+              <span>成交撤单比</span>
+              <strong>{fmt(summary?.fill_to_cancel_ratio, 3)}</strong>
+            </div>
+            <div>
+              <span>在簿时长 P50(s)</span>
+              <strong>{fmt(summary?.time_in_book_p50_sec, 2)}</strong>
+            </div>
+            <div>
+              <span>在簿时长 P90(s)</span>
+              <strong>{fmt(summary?.time_in_book_p90_sec, 2)}</strong>
+            </div>
+            <div>
+              <span>买单最长在簿(s)</span>
+              <strong>{fmt(summary?.open_order_age_buy_sec, 2)}</strong>
+            </div>
+            <div>
+              <span>卖单最长在簿(s)</span>
+              <strong>{fmt(summary?.open_order_age_sell_sec, 2)}</strong>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="panel-grid">
@@ -433,31 +577,15 @@ export default function App() {
         </div>
 
         <div className="panel">
-          <h2>API 配置</h2>
-          <p className="panel-tip">仅在引擎 idle/halted 时允许修改，保存后密钥不会回显。</p>
+          <h2>实盘配置</h2>
+          <p className="panel-tip">默认固定为 GRVT prod 实盘环境，仅在引擎 idle/halted 时允许修改。</p>
+
+          <div className="readonly-field">
+            <span>GRVT 环境</span>
+            <strong>prod（固定实盘）</strong>
+          </div>
+
           <div className="form-grid">
-            <label>
-              <span>GRVT 环境</span>
-              <select
-                value={apiForm.grvt_env}
-                onChange={(e) => setApiForm((s) => ({ ...s, grvt_env: e.target.value }))}
-              >
-                <option value="testnet">testnet</option>
-                <option value="prod">prod</option>
-                <option value="staging">staging</option>
-                <option value="dev">dev</option>
-              </select>
-            </label>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={apiForm.grvt_use_mock}
-                onChange={(e) => setApiForm((s) => ({ ...s, grvt_use_mock: e.target.checked }))}
-              />
-              <span>使用 Mock 交易所</span>
-            </label>
-
             <label>
               <span>GRVT_API_KEY</span>
               <input
@@ -518,9 +646,57 @@ export default function App() {
             </label>
 
             <button className="btn-primary" disabled={!canEditApi || exchangeSaving} onClick={saveExchange}>
-              {exchangeSaving ? "保存中..." : "保存 API 配置"}
+              {exchangeSaving ? "保存中..." : "保存实盘 API 配置"}
             </button>
-            {!canEditApi && <div className="block-hint">引擎运行中不可修改 API，请先停止。</div>}
+          </div>
+
+          <h3 className="sub-title">Telegram 告警配置</h3>
+          <p className="panel-tip">仅支持 Bot Token 与 Chat ID，保存后密钥不会回显。</p>
+          <div className="form-grid">
+            <label>
+              <span>TELEGRAM_BOT_TOKEN</span>
+              <input
+                type="password"
+                value={telegramForm.telegram_bot_token}
+                disabled={telegramForm.clear_telegram_bot_token}
+                placeholder="留空表示保持原值"
+                onChange={(e) => setTelegramForm((s) => ({ ...s, telegram_bot_token: e.target.value }))}
+              />
+            </label>
+
+            <label>
+              <span>TELEGRAM_CHAT_ID</span>
+              <input
+                value={telegramForm.telegram_chat_id}
+                disabled={telegramForm.clear_telegram_chat_id}
+                placeholder="留空表示保持原值"
+                onChange={(e) => setTelegramForm((s) => ({ ...s, telegram_chat_id: e.target.value }))}
+              />
+            </label>
+
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={telegramForm.clear_telegram_bot_token}
+                onChange={(e) => setTelegramForm((s) => ({ ...s, clear_telegram_bot_token: e.target.checked }))}
+              />
+              <span>清空已保存 Bot Token</span>
+            </label>
+
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={telegramForm.clear_telegram_chat_id}
+                onChange={(e) => setTelegramForm((s) => ({ ...s, clear_telegram_chat_id: e.target.checked }))}
+              />
+              <span>清空已保存 Chat ID</span>
+            </label>
+
+            <button className="btn-primary" disabled={!canEditApi || telegramSaving} onClick={saveTelegram}>
+              {telegramSaving ? "保存中..." : "保存 Telegram 配置"}
+            </button>
+
+            {!canEditApi && <div className="block-hint">引擎运行中不可修改配置，请先停止。</div>}
           </div>
 
           <ul className="status-list">
@@ -530,8 +706,10 @@ export default function App() {
               GRVT_TRADING_ACCOUNT_ID:{" "}
               {exchangeConfig?.grvt_trading_account_id_configured ? "已配置" : "未配置"}
             </li>
+            <li>TELEGRAM_BOT_TOKEN: {telegramConfig?.telegram_bot_token_configured ? "已配置" : "未配置"}</li>
+            <li>TELEGRAM_CHAT_ID: {telegramConfig?.telegram_chat_id_configured ? "已配置" : "未配置"}</li>
             <li>JWT密钥: {secrets?.app_jwt_secret_configured ? "已配置" : "未配置"}</li>
-            <li>Telegram: {secrets?.telegram_configured ? "已配置" : "未配置"}</li>
+            <li>Telegram总状态: {secrets?.telegram_configured ? "已配置" : "未配置"}</li>
           </ul>
         </div>
       </section>

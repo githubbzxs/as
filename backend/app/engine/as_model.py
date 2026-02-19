@@ -40,7 +40,15 @@ class AsMarketMakerModel:
         k = max(1e-6, liquidity_k)
         raw_half_spread = (gamma * sigma * sigma * horizon_sec) / 2 + (1.0 / gamma) * math.log(1 + gamma / k)
         raw_spread_bps = max(0.1, raw_half_spread * 2 * 10000)
-        spread_bps = max(min_spread_bps, min(max_spread_bps, raw_spread_bps))
+
+        # 低波动+中性库存时限制上沿，避免长期贴着 max_spread_bps 导致难成交。
+        spread_band = max(0.0, max_spread_bps - min_spread_bps)
+        sigma_regime = max(0.0, min(1.0, sigma / max(1e-9, 0.0012)))
+        inventory_pressure = min(1.0, abs(inventory_ratio))
+        regime_score = 0.15 + 0.65 * sigma_regime + 0.20 * inventory_pressure
+        adaptive_cap = min_spread_bps + spread_band * max(0.1, min(1.0, regime_score))
+
+        spread_bps = max(min_spread_bps, min(adaptive_cap, max_spread_bps, raw_spread_bps))
 
         spread_abs = reservation_price * spread_bps / 10000
         bid = max(0.0001, reservation_price - spread_abs / 2)

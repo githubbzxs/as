@@ -55,3 +55,23 @@ def test_inventory_bias_moves_reservation_price():
     )
 
     assert long_inv.reservation_price < neutral.reservation_price
+
+
+def test_spread_not_sticky_at_max_under_low_vol_and_neutral_inventory():
+    model = AsMarketMakerModel()
+    decision = model.compute_quote(
+        mid_price=100.0,
+        sigma=1e-6,
+        inventory_base=0.0,
+        max_inventory_base=10.0,
+        base_gamma=0.12,
+        gamma_min=0.02,
+        gamma_max=0.8,
+        liquidity_k=1.5,
+        horizon_sec=15,
+        min_spread_bps=1.2,
+        max_spread_bps=8.0,
+        quote_size_notional=100.0,
+    )
+
+    assert decision.spread_bps < 8.0

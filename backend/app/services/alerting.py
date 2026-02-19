@@ -4,24 +4,25 @@ import logging
 
 import httpx
 
-from app.core.settings import Settings
+from app.services.telegram_config import TelegramConfigStore
 
 
 class AlertService:
     """告警分发服务。"""
 
-    def __init__(self, settings: Settings) -> None:
-        self._settings = settings
+    def __init__(self, telegram_config_store: TelegramConfigStore) -> None:
+        self._telegram_config_store = telegram_config_store
         self._logger = logging.getLogger("alert")
 
     async def send(self, title: str, message: str) -> None:
-        if not self._settings.telegram_bot_token or not self._settings.telegram_chat_id:
+        telegram_cfg = self._telegram_config_store.get()
+        if not telegram_cfg.telegram_bot_token or not telegram_cfg.telegram_chat_id:
             self._logger.warning("Telegram 未配置，跳过告警: %s %s", title, message)
             return
         text = f"[{title}]\n{message}"
-        url = f"https://api.telegram.org/bot{self._settings.telegram_bot_token}/sendMessage"
+        url = f"https://api.telegram.org/bot{telegram_cfg.telegram_bot_token}/sendMessage"
         payload = {
-            "chat_id": self._settings.telegram_chat_id,
+            "chat_id": telegram_cfg.telegram_chat_id,
             "text": text,
         }
         try:

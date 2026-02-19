@@ -13,8 +13,7 @@ from app.schemas import ExchangeConfigUpdateRequest, ExchangeConfigView
 class ExchangeConfigRecord(BaseModel):
     """交易所连接配置（含敏感字段，仅服务端使用）。"""
 
-    grvt_env: str = "testnet"
-    grvt_use_mock: bool = True
+    grvt_env: str = "prod"
     grvt_api_key: str = ""
     grvt_api_secret: str = ""
     grvt_trading_account_id: str = ""
@@ -47,12 +46,23 @@ class ExchangeConfigStore:
 
     def _default(self) -> ExchangeConfigRecord:
         return ExchangeConfigRecord(
-            grvt_env=self._settings.grvt_env,
-            grvt_use_mock=self._settings.grvt_use_mock,
+            grvt_env="prod",
             grvt_api_key=self._settings.grvt_api_key,
             grvt_api_secret=self._settings.grvt_api_secret,
             grvt_trading_account_id=self._settings.grvt_trading_account_id,
         )
+
+    def _normalize_env(self, config: ExchangeConfigRecord) -> ExchangeConfigRecord:
+        if config.grvt_env == "prod":
+            return config
+        normalized = config.model_copy(
+            update={
+                "grvt_env": "prod",
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        self._save(normalized)
+        return normalized
 
     def _load_or_default(self) -> ExchangeConfigRecord:
         if not self._path.exists():
@@ -61,7 +71,19 @@ class ExchangeConfigStore:
             return config
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            return ExchangeConfigRecord.model_validate(raw)
+            config = ExchangeConfigRecord.model_validate(raw)
+            config = self._normalize_env(config)
+            if isinstance(raw, dict):
+                allowed_keys = {
+                    "grvt_env",
+                    "grvt_api_key",
+                    "grvt_api_secret",
+                    "grvt_trading_account_id",
+                    "updated_at",
+                }
+                if any(key not in allowed_keys for key in raw.keys()):
+                    self._save(config)
+            return config
         except (json.JSONDecodeError, ValidationError, OSError):
             config = self._default()
             self._save(config)
@@ -90,11 +112,6 @@ class ExchangeConfigStore:
     def update(self, payload: ExchangeConfigUpdateRequest) -> ExchangeConfigRecord:
         merged = self._config.model_dump()
 
-        if payload.grvt_env is not None:
-            merged["grvt_env"] = payload.grvt_env
-        if payload.grvt_use_mock is not None:
-            merged["grvt_use_mock"] = payload.grvt_use_mock
-
         merged["grvt_api_key"] = self._resolve_secret_value(
             current=self._config.grvt_api_key,
             incoming=payload.grvt_api_key,
@@ -121,7 +138,6 @@ class ExchangeConfigStore:
         cfg = self._config
         return ExchangeConfigView(
             grvt_env=cfg.grvt_env,
-            grvt_use_mock=cfg.grvt_use_mock,
             grvt_api_key_configured=bool(cfg.grvt_api_key),
             grvt_api_secret_configured=bool(cfg.grvt_api_secret),
             grvt_trading_account_id_configured=bool(cfg.grvt_trading_account_id),

@@ -5,8 +5,7 @@ from app.services.exchange_config import ExchangeConfigStore
 
 def build_settings() -> Settings:
     return Settings(
-        grvt_env="testnet",
-        grvt_use_mock=True,
+        grvt_env="prod",
         grvt_api_key="",
         grvt_api_secret="",
         grvt_trading_account_id="",
@@ -19,20 +18,29 @@ def test_exchange_config_store_update_and_persist(tmp_path):
 
     updated = store.update(
         ExchangeConfigUpdateRequest(
-            grvt_env="prod",
-            grvt_use_mock=False,
             grvt_api_key="key-A",
             grvt_api_secret="secret-A",
             grvt_trading_account_id="acc-A",
         )
     )
     assert updated.grvt_env == "prod"
-    assert updated.grvt_use_mock is False
     assert updated.grvt_api_key == "key-A"
 
     restored = ExchangeConfigStore(path, build_settings()).get()
+    assert restored.grvt_env == "prod"
     assert restored.grvt_api_key == "key-A"
     assert restored.grvt_trading_account_id == "acc-A"
+
+
+def test_exchange_config_store_force_prod_env(tmp_path):
+    path = tmp_path / "exchange.json"
+    path.write_text(
+        '{"grvt_env":"testnet","grvt_api_key":"","grvt_api_secret":"","grvt_trading_account_id":""}',
+        encoding="utf-8",
+    )
+
+    cfg = ExchangeConfigStore(path, build_settings()).get()
+    assert cfg.grvt_env == "prod"
 
 
 def test_exchange_config_store_empty_not_override_and_clear(tmp_path):

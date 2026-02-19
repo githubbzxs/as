@@ -9,7 +9,7 @@ def test_runtime_config_store_update(tmp_path: Path):
     cfg = store.get()
     assert cfg.symbol
 
-    updated = store.update({"symbol": "BNB_USDT-PERP", "equity_risk_pct": 0.12})
+    updated = store.update({"symbol": "BNB_USDT_Perp", "equity_risk_pct": 0.12})
     assert updated.equity_risk_pct == 0.12
 
     store2 = RuntimeConfigStore(path)

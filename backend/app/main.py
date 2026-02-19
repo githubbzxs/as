@@ -18,6 +18,7 @@ from app.services.event_bus import EventBus
 from app.services.exchange_config import ExchangeConfigStore
 from app.services.monitoring import MonitoringService
 from app.services.runtime_config import RuntimeConfigStore
+from app.services.telegram_config import TelegramConfigStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,17 +40,17 @@ def create_app() -> FastAPI:
 
     config_store = RuntimeConfigStore(settings.runtime_config_file)
     exchange_config_store = ExchangeConfigStore(settings.exchange_config_file, settings)
+    telegram_config_store = TelegramConfigStore(settings.telegram_config_file, settings)
     exchange_cfg = exchange_config_store.get()
     monitor_service = MonitoringService(max_points=1200)
     event_bus = EventBus(queue_size=settings.stream_queue_size)
-    alert_service = AlertService(settings)
+    alert_service = AlertService(telegram_config_store)
     adapter = build_exchange_adapter(
         settings,
         grvt_env=exchange_cfg.grvt_env,
         grvt_api_key=exchange_cfg.grvt_api_key,
         grvt_api_secret=exchange_cfg.grvt_api_secret,
         grvt_trading_account_id=exchange_cfg.grvt_trading_account_id,
-        grvt_use_mock=exchange_cfg.grvt_use_mock,
     )
 
     strategy_engine = StrategyEngine(
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
         adapter=adapter,
         config_store=config_store,
         exchange_config_store=exchange_config_store,
+        telegram_config_store=telegram_config_store,
         monitor=monitor_service,
         event_bus=event_bus,
         alert_service=alert_service,
