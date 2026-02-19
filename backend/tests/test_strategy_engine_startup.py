@@ -91,3 +91,20 @@ def test_sync_orders_places_both_sides_when_orders_missing():
     assert side_to_call["sell"]["post_only"] is True
     assert side_to_call["buy"]["client_order_id"].isdigit()
     assert side_to_call["sell"]["client_order_id"].isdigit()
+
+
+def test_ensure_min_quote_size_applies_floor():
+    decision = QuoteDecision(
+        bid_price=100.0,
+        ask_price=100.2,
+        quote_size_base=0.008,
+        quote_size_notional=0.8,
+        spread_bps=20.0,
+        gamma=0.2,
+        reservation_price=100.1,
+    )
+
+    StrategyEngine._ensure_min_quote_size(decision, mid_price=605.0, min_size_base=0.01)
+
+    assert decision.quote_size_base == 0.01
+    assert decision.quote_size_notional == 6.05

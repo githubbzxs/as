@@ -197,6 +197,7 @@ class StrategyEngine:
                     max_spread_bps=cfg.max_spread_bps,
                     quote_size_notional=quote_notional,
                 )
+                self._ensure_min_quote_size(decision, market.mid, cfg.min_order_size_base)
                 self._post_only_guard(market.bid, market.ask, decision)
 
                 sync_result = SyncResult(requoted=False, reason="none")
@@ -431,3 +432,12 @@ class StrategyEngine:
         if best_ask <= 0:
             return 0.0
         return max(0.0, (ask_price - best_ask) / best_ask * 10000)
+
+    @staticmethod
+    def _ensure_min_quote_size(decision: QuoteDecision, mid_price: float, min_size_base: float) -> None:
+        if min_size_base <= 0:
+            return
+        if decision.quote_size_base >= min_size_base:
+            return
+        decision.quote_size_base = min_size_base
+        decision.quote_size_notional = min_size_base * max(mid_price, 1e-9)

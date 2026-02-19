@@ -39,6 +39,10 @@
   - Why：线上出现持续 `400 code=2013 (Client Order ID repeats with the last order)`，引擎运行但始终无在簿挂单。
   - Impact：`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_requote.py`
 
+- **[2026-02-19] 最小下单量保护**：运行时新增 `min_order_size_base` 下限保护，避免小资金账户下单量低于交易所最小限制。
+  - Why：线上出现持续 `400 code=2062 (Order size smaller than min size)`，导致引擎运行但无有效挂单。
+  - Impact：`backend/app/schemas.py`、`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_startup.py`
+
 ## Decisions
 
 - **[2026-02-19] 策略框架**：采用 Avellaneda-Stoikov + 基础自适应（波动率/深度/成交强度）。
@@ -130,3 +134,7 @@
 - **[2026-02-19] 运行但不挂单排查结论**：若 `mode=running` 但 `open_orders=[]` 且日志反复出现 `code=2013 Client Order ID repeats with the last order`，则为下单被交易所拒绝而非策略未触发。
   - Why：此场景会表现为持续 `missing-side-buy,missing-side-sell` 和撤单计数增长。
   - Verify：`journalctl -u grvt-mm --no-pager | grep "code': 2013"`；修复后应出现 `create_order` 成功并能查到 open orders。
+
+- **[2026-02-19] 运行但不挂单二级结论**：若 `mode=running` 且 `exchange_connected=true`，但日志持续 `code=2062 Order size smaller than min size`，则为下单量过小被交易所拒绝。
+  - Why：低权益账户在默认 `quote_size_notional` 下可能推导出过小 `quote_size_base`。
+  - Verify：`journalctl -u grvt-mm --no-pager | grep "code': 2062"`；应用最小下单量保护后应显著减少该错误并出现在簿订单。

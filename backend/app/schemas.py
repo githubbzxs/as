@@ -39,6 +39,7 @@ class RuntimeConfig(BaseModel):
     requote_threshold_bps: float = Field(default=0.4, ge=0.1)
     order_ttl_sec: int = Field(default=15, ge=1, le=300)
     quote_interval_sec: float = Field(default=0.6, ge=0.2, le=10)
+    min_order_size_base: float = Field(default=0.01, ge=0.000001)
 
     sigma_window_sec: int = Field(default=60, ge=10, le=600)
     depth_window_sec: int = Field(default=30, ge=5, le=300)
