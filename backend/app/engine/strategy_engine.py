@@ -198,7 +198,8 @@ class StrategyEngine:
                     quote_size_notional=quote_notional,
                 )
                 self._ensure_min_quote_size(decision, market.mid, cfg.min_order_size_base)
-                self._post_only_guard(market.bid, market.ask, decision)
+                price_tick = self._infer_price_tick(market.bid, market.ask)
+                self._post_only_guard(market.bid, market.ask, decision, price_tick)
 
                 sync_result = SyncResult(requoted=False, reason="none")
                 if self._mode == "running":
@@ -307,12 +308,16 @@ class StrategyEngine:
             except asyncio.TimeoutError:
                 pass
 
-    def _post_only_guard(self, bid: float, ask: float, decision: QuoteDecision) -> None:
-        min_tick = max(0.0001, decision.reservation_price * 0.00001)
+    def _post_only_guard(self, bid: float, ask: float, decision: QuoteDecision, price_tick: float) -> None:
+        min_tick = max(0.0001, price_tick)
         decision.bid_price = min(decision.bid_price, ask - min_tick)
         decision.ask_price = max(decision.ask_price, bid + min_tick)
         if decision.bid_price >= decision.ask_price:
             decision.ask_price = decision.bid_price + min_tick
+        decision.bid_price = self._round_price_by_tick(decision.bid_price, min_tick, "down")
+        decision.ask_price = self._round_price_by_tick(decision.ask_price, min_tick, "up")
+        if decision.bid_price >= decision.ask_price:
+            decision.ask_price = self._round_price_by_tick(decision.bid_price + min_tick, min_tick, "up")
 
     async def _sync_orders(self, cfg: RuntimeConfig, position: PositionSnapshot, decision: QuoteDecision) -> SyncResult:
         orders = await self._adapter.fetch_open_orders(cfg.symbol)
@@ -441,3 +446,25 @@ class StrategyEngine:
             return
         decision.quote_size_base = min_size_base
         decision.quote_size_notional = min_size_base * max(mid_price, 1e-9)
+
+    @staticmethod
+    def _infer_price_tick(bid: float, ask: float) -> float:
+        tick = 0.0001
+        for price in (bid, ask):
+            txt = f"{price:.10f}".rstrip("0").rstrip(".")
+            if "." not in txt:
+                continue
+            decimals = len(txt.split(".")[1])
+            tick = max(tick, 10 ** (-decimals))
+        return tick
+
+    @staticmethod
+    def _round_price_by_tick(price: float, tick: float, side: str) -> float:
+        if tick <= 0:
+            return max(0.0001, price)
+        unit = price / tick
+        if side == "down":
+            rounded = math.floor(unit + 1e-12) * tick
+        else:
+            rounded = math.ceil(unit - 1e-12) * tick
+        return max(0.0001, rounded)

@@ -108,3 +108,26 @@ def test_ensure_min_quote_size_applies_floor():
 
     assert decision.quote_size_base == 0.01
     assert decision.quote_size_notional == 6.05
+
+
+def test_post_only_guard_rounds_price_to_tick():
+    decision = QuoteDecision(
+        bid_price=606.081510934,
+        ask_price=606.368489066,
+        quote_size_base=0.01,
+        quote_size_notional=6.06,
+        spread_bps=4.0,
+        gamma=0.2,
+        reservation_price=606.22,
+    )
+
+    tick = StrategyEngine._infer_price_tick(606.22, 606.23)
+    engine, _, _, _, _ = _build_engine()
+    engine._post_only_guard(606.22, 606.23, decision, tick)  # noqa: SLF001
+
+    assert tick == 0.01
+    assert abs(decision.bid_price - round(decision.bid_price, 2)) < 1e-9
+    assert abs(decision.ask_price - round(decision.ask_price, 2)) < 1e-9
+    assert decision.bid_price <= 606.22
+    assert decision.ask_price >= 606.23
+    assert decision.bid_price < decision.ask_price
