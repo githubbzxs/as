@@ -1,0 +1,12 @@
+﻿fastapi==0.115.8
+uvicorn[standard]==0.34.0
+pydantic==2.10.6
+pydantic-settings==2.7.1
+python-jose[cryptography]==3.3.0
+passlib==1.7.4
+httpx==0.28.1
+tenacity==9.0.0
+grvt-pysdk==0.2.1
+orjson==3.10.15
+python-dotenv==1.0.1
+

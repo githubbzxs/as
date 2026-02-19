@@ -1,0 +1,10 @@
+[project]
+name = "grvt-mm-bot"
+version = "0.1.0"
+description = "?? Avellaneda-Stoikov ? GRVT ????"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+testpaths = ["tests"]

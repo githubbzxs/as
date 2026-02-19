@@ -1,0 +1,129 @@
+﻿from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class HealthStatus(BaseModel):
+    engine_running: bool
+    mode: Literal["idle", "readonly", "running", "halted"]
+    kill_reason: str | None = None
+    last_error: str | None = None
+    exchange_connected: bool
+    symbol: str
+    updated_at: datetime
+
+
+class RuntimeConfig(BaseModel):
+    symbol: str = "BNB_USDT-PERP"
+
+    equity_risk_pct: float = Field(default=0.05, ge=0.001, le=1.0)
+    max_inventory_notional: float = Field(default=2000.0, ge=10)
+    max_single_order_notional: float = Field(default=200.0, ge=1)
+
+    min_spread_bps: float = Field(default=4.0, ge=0.1)
+    max_spread_bps: float = Field(default=60.0, ge=1)
+
+    requote_threshold_bps: float = Field(default=2.0, ge=0.1)
+    order_ttl_sec: int = Field(default=15, ge=1, le=300)
+    quote_interval_sec: float = Field(default=1.0, ge=0.2, le=10)
+
+    sigma_window_sec: int = Field(default=60, ge=10, le=600)
+    depth_window_sec: int = Field(default=30, ge=5, le=300)
+    trade_intensity_window_sec: int = Field(default=30, ge=5, le=300)
+
+    drawdown_kill_pct: float = Field(default=8.0, ge=0.1, le=80)
+    volatility_kill_zscore: float = Field(default=4.0, ge=1.0, le=10.0)
+    max_consecutive_failures: int = Field(default=5, ge=1, le=50)
+
+    recovery_readonly_sec: int = Field(default=180, ge=10, le=1800)
+
+    base_gamma: float = Field(default=0.12, ge=0.01, le=5.0)
+    gamma_min: float = Field(default=0.02, ge=0.001, le=2.0)
+    gamma_max: float = Field(default=0.8, ge=0.01, le=10.0)
+    liquidity_k: float = Field(default=1.5, ge=0.1, le=30.0)
+
+    @field_validator("max_spread_bps")
+    @classmethod
+    def validate_spread(cls, v: float, info):
+        data = info.data
+        min_spread = data.get("min_spread_bps")
+        if min_spread is not None and v < min_spread:
+            raise ValueError("max_spread_bps 不能小于 min_spread_bps")
+        return v
+
+
+class SecretsStatus(BaseModel):
+    grvt_api_key_configured: bool
+    grvt_api_secret_configured: bool
+    grvt_trading_account_id_configured: bool
+    app_jwt_secret_configured: bool
+    telegram_configured: bool
+
+
+class OrderView(BaseModel):
+    order_id: str
+    side: Literal["buy", "sell"]
+    price: float
+    size: float
+    status: str
+    created_at: datetime
+
+
+class TradeView(BaseModel):
+    trade_id: str
+    side: Literal["buy", "sell"]
+    price: float
+    size: float
+    fee: float = 0.0
+    created_at: datetime
+
+
+class MetricsSummary(BaseModel):
+    timestamp: datetime
+    mid_price: float
+    spread_bps: float
+    sigma: float
+    sigma_zscore: float
+    inventory_base: float
+    inventory_notional: float
+    equity: float
+    pnl: float
+    drawdown_pct: float
+    quote_size_base: float
+    quote_size_notional: float
+    mode: str
+    consecutive_failures: int
+
+
+class TimeSeriesPoint(BaseModel):
+    t: datetime
+    value: float
+
+
+class MetricsResponse(BaseModel):
+    summary: MetricsSummary
+    series: dict[str, list[TimeSeriesPoint]]
+
+
+class EngineCommandResponse(BaseModel):
+    message: str
+    mode: str
+
+
+class StreamEnvelope(BaseModel):
+    type: str
+    ts: datetime
+    payload: dict
