@@ -1,11 +1,10 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { useMemo, useState, useEffect } from "react";
 import {
   fetchExchangeConfig,
+  fetchGoalConfig,
   fetchMetrics,
   fetchOpenOrders,
   fetchRecentTrades,
-  fetchRuntimeConfig,
-  fetchRuntimeProfile,
   fetchSecretsStatus,
   fetchStatus,
   fetchTelegramConfig,
@@ -13,273 +12,22 @@ import {
   startEngine,
   stopEngine,
   updateExchangeConfig,
-  updateRuntimeConfig,
-  updateRuntimeProfile,
+  updateGoalConfig,
   updateTelegramConfig,
 } from "./api";
 
 const initialLogin = { username: "admin", password: "" };
 
-const profileFieldMeta = [
-  {
-    key: "aggressiveness",
-    label: "做市激进度",
-    hint: "越高越积极，价差更紧、刷新更快。",
-  },
-  {
-    key: "inventory_tolerance",
-    label: "库存容忍度",
-    hint: "越高越允许持仓波动，挂单名义上限更大。",
-  },
-  {
-    key: "risk_threshold",
-    label: "风险阈值",
-    hint: "越高越宽松，熔断阈值更高、只读恢复更快。",
-  },
+const riskProfileOptions = [
+  { value: "safe", label: "稳健", hint: "更保守，价差更宽，成交更慢。" },
+  { value: "balanced", label: "平衡", hint: "兼顾成交效率和风险控制。" },
+  { value: "throughput", label: "冲量", hint: "优先提高成交量，价差更紧、刷新更快。" },
 ];
 
-const runtimeFieldMeta = [
-  {
-    key: "symbol",
-    label: "交易对",
-    type: "text",
-    meaning: "策略运行标的。",
-    up: "切换到更活跃标的可能提升成交。",
-    down: "低流动标的会降低成交节奏。",
-  },
-  {
-    key: "equity_risk_pct",
-    label: "权益风险占比",
-    type: "number",
-    step: 0.001,
-    meaning: "单轮下单规模参考权益比例。",
-    up: "成交与风险都放大。",
-    down: "风险降低但成交变慢。",
-  },
-  {
-    key: "max_inventory_notional_pct",
-    label: "库存名义占比上限",
-    type: "number",
-    step: 0.01,
-    meaning: "库存上限=权益×该比例。",
-    up: "允许更大净仓。",
-    down: "更快触发库存限制。",
-  },
-  {
-    key: "max_inventory_notional",
-    label: "固定库存上限(兼容)",
-    type: "number",
-    step: 1,
-    meaning: "占比模式关闭时使用的固定值。",
-    up: "容忍更大净仓。",
-    down: "仓位控制更紧。",
-  },
-  {
-    key: "max_single_order_notional",
-    label: "单笔最大名义",
-    type: "number",
-    step: 1,
-    meaning: "每笔挂单名义上限。",
-    up: "单笔成交能力提高。",
-    down: "下单冲击更小。",
-  },
-  {
-    key: "min_spread_bps",
-    label: "最小价差(bps)",
-    type: "number",
-    step: 0.01,
-    meaning: "报价下限。",
-    up: "更保守。",
-    down: "更贴盘口。",
-  },
-  {
-    key: "max_spread_bps",
-    label: "最大价差(bps)",
-    type: "number",
-    step: 0.01,
-    meaning: "报价上限。",
-    up: "波动时更保守。",
-    down: "始终更激进。",
-  },
-  {
-    key: "requote_threshold_bps",
-    label: "重报价阈值(bps)",
-    type: "number",
-    step: 0.01,
-    meaning: "盘口偏离触发重挂阈值。",
-    up: "撤改单更少。",
-    down: "跟价更快。",
-  },
-  {
-    key: "order_ttl_sec",
-    label: "挂单TTL(秒)",
-    type: "number",
-    step: 1,
-    meaning: "订单在簿最长停留时间。",
-    up: "驻留更久。",
-    down: "刷新更快。",
-  },
-  {
-    key: "quote_interval_sec",
-    label: "主循环间隔(秒)",
-    type: "number",
-    step: 0.01,
-    meaning: "策略每轮执行间隔。",
-    up: "响应更慢。",
-    down: "响应更快。",
-  },
-  {
-    key: "min_order_size_base",
-    label: "最小下单量保护",
-    type: "number",
-    step: 0.0001,
-    meaning: "防止小于交易所最小量。",
-    up: "最小量拒单更少。",
-    down: "粒度更细。",
-  },
-  {
-    key: "sigma_window_sec",
-    label: "sigma窗口(秒)",
-    type: "number",
-    step: 1,
-    meaning: "波动估计窗口。",
-    up: "曲线更平滑。",
-    down: "响应更灵敏。",
-  },
-  {
-    key: "depth_window_sec",
-    label: "深度窗口(秒)",
-    type: "number",
-    step: 1,
-    meaning: "盘口深度统计窗口。",
-    up: "估计更稳。",
-    down: "反应更快。",
-  },
-  {
-    key: "trade_intensity_window_sec",
-    label: "成交强度窗口(秒)",
-    type: "number",
-    step: 1,
-    meaning: "成交强度统计窗口。",
-    up: "更平滑。",
-    down: "更灵敏。",
-  },
-  {
-    key: "drawdown_kill_pct",
-    label: "回撤熔断阈值(%)",
-    type: "number",
-    step: 0.1,
-    meaning: "权益回撤触发熔断阈值。",
-    up: "更耐受回撤。",
-    down: "更早止损。",
-  },
-  {
-    key: "volatility_kill_zscore",
-    label: "波动熔断Z阈值",
-    type: "number",
-    step: 0.1,
-    meaning: "异常波动触发熔断阈值。",
-    up: "更迟钝。",
-    down: "更敏感。",
-  },
-  {
-    key: "max_consecutive_failures",
-    label: "连续失败阈值",
-    type: "number",
-    step: 1,
-    meaning: "连续失败达到该值熔断。",
-    up: "容错更高。",
-    down: "保护更早。",
-  },
-  {
-    key: "recovery_readonly_sec",
-    label: "恢复只读时长(秒)",
-    type: "number",
-    step: 1,
-    meaning: "风控恢复后的观察时长。",
-    up: "更稳健。",
-    down: "恢复更快。",
-  },
-  {
-    key: "base_gamma",
-    label: "基础γ",
-    type: "number",
-    step: 0.001,
-    meaning: "AS 基础风险厌恶系数。",
-    up: "报价更保守。",
-    down: "报价更激进。",
-  },
-  {
-    key: "gamma_min",
-    label: "γ下限",
-    type: "number",
-    step: 0.001,
-    meaning: "动态γ最小保护值。",
-    up: "最低风险更高。",
-    down: "可更激进。",
-  },
-  {
-    key: "gamma_max",
-    label: "γ上限",
-    type: "number",
-    step: 0.001,
-    meaning: "动态γ最大保护值。",
-    up: "极端时更保守。",
-    down: "上限更低。",
-  },
-  {
-    key: "liquidity_k",
-    label: "流动性k",
-    type: "number",
-    step: 0.01,
-    meaning: "AS 流动性参数。",
-    up: "报价更保守。",
-    down: "报价更贴盘。",
-  },
-  {
-    key: "tg_heartbeat_enabled",
-    label: "Telegram心跳开关",
-    type: "boolean",
-    meaning: "是否发送周期运行摘要。",
-    up: "开启周期摘要。",
-    down: "仅发送关键事件。",
-  },
-  {
-    key: "tg_heartbeat_interval_sec",
-    label: "Telegram心跳间隔(秒)",
-    type: "number",
-    step: 1,
-    meaning: "周期摘要发送间隔。",
-    up: "消息更少。",
-    down: "消息更实时。",
-  },
-  {
-    key: "close_retry_base_delay_sec",
-    label: "平仓重试基础延迟(秒)",
-    type: "number",
-    step: 0.01,
-    meaning: "taker 平仓失败首次重试间隔。",
-    up: "重试更平缓。",
-    down: "重试更快。",
-  },
-  {
-    key: "close_retry_max_delay_sec",
-    label: "平仓重试最大延迟(秒)",
-    type: "number",
-    step: 0.01,
-    meaning: "指数退避最大间隔。",
-    up: "更稳但更慢。",
-    down: "更快重试。",
-  },
-  {
-    key: "close_position_epsilon_base",
-    label: "平仓完成阈值",
-    type: "number",
-    step: 0.000001,
-    meaning: "净仓绝对值小于该值视为平仓完成。",
-    up: "更快判定完成。",
-    down: "更严格清仓。",
-  },
+const symbolOptions = [
+  { value: "BNB_USDT_Perp", label: "BNB_USDT_Perp" },
+  { value: "XRP_USDT_Perp", label: "XRP_USDT_Perp" },
+  { value: "SUI_USDT_Perp", label: "SUI_USDT_Perp" },
 ];
 
 const wsStateMeta = {
@@ -302,13 +50,6 @@ function formatDuration(seconds) {
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
   return `${h}h ${m}m ${s}s`;
-}
-
-function sliderValue(value) {
-  if (value === null || value === undefined) return 0;
-  const num = Number(value);
-  if (Number.isNaN(num)) return 0;
-  return Math.max(0, Math.min(100, num));
 }
 
 function buildSmoothPath(points) {
@@ -368,66 +109,6 @@ function LineChart({ title, points, color = "#0ea5e9" }) {
   );
 }
 
-function SliderField({ label, value, hint, onChange }) {
-  return (
-    <label className="slider-field">
-      <div className="slider-label-row">
-        <span className="slider-label">{label}</span>
-        <span className="slider-value">{fmt(value, 0)}</span>
-      </div>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        step="1"
-        value={sliderValue(value)}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      <div className="slider-hint">{hint}</div>
-    </label>
-  );
-}
-
-function RuntimeField({ meta, value, onChange }) {
-  if (meta.type === "boolean") {
-    return (
-      <label className="runtime-field runtime-field-checkbox">
-        <div className="runtime-label">{meta.label}</div>
-        <input type="checkbox" checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />
-        <div className="runtime-help">
-          <div>含义：{meta.meaning}</div>
-          <div>调大：{meta.up}</div>
-          <div>调小：{meta.down}</div>
-        </div>
-      </label>
-    );
-  }
-  return (
-    <label className="runtime-field">
-      <div className="runtime-label">{meta.label}</div>
-      <input
-        type={meta.type === "number" ? "number" : "text"}
-        step={meta.step || "any"}
-        value={value ?? ""}
-        onChange={(e) => {
-          if (meta.type === "number") {
-            const num = Number(e.target.value);
-            if (!Number.isFinite(num)) return;
-            onChange(num);
-            return;
-          }
-          onChange(e.target.value);
-        }}
-      />
-      <div className="runtime-help">
-        <div>含义：{meta.meaning}</div>
-        <div>调大：{meta.up}</div>
-        <div>调小：{meta.down}</div>
-      </div>
-    </label>
-  );
-}
-
 function LoginPanel({ onLogin, loading }) {
   const [form, setForm] = useState(initialLogin);
   const [error, setError] = useState("");
@@ -473,10 +154,13 @@ export default function App() {
 
   const [status, setStatus] = useState(null);
   const [metrics, setMetrics] = useState(null);
-  const [runtimeProfile, setRuntimeProfile] = useState(null);
-  const [runtimeConfig, setRuntimeConfig] = useState(null);
-  const [runtimeDraft, setRuntimeDraft] = useState(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [goalConfig, setGoalConfig] = useState(null);
+  const [goalForm, setGoalForm] = useState({
+    symbol: "BNB_USDT_Perp",
+    principal_usdt: 10,
+    target_hourly_notional: 10000,
+    risk_profile: "throughput",
+  });
   const [exchangeConfig, setExchangeConfig] = useState(null);
   const [telegramConfig, setTelegramConfig] = useState(null);
   const [secrets, setSecrets] = useState(null);
@@ -487,19 +171,13 @@ export default function App() {
     grvt_api_key: "",
     grvt_api_secret: "",
     grvt_trading_account_id: "",
-    clear_grvt_api_key: false,
-    clear_grvt_api_secret: false,
-    clear_grvt_trading_account_id: false,
   });
   const [telegramForm, setTelegramForm] = useState({
     telegram_bot_token: "",
     telegram_chat_id: "",
-    clear_telegram_bot_token: false,
-    clear_telegram_chat_id: false,
   });
 
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [runtimeSaving, setRuntimeSaving] = useState(false);
+  const [goalSaving, setGoalSaving] = useState(false);
   const [exchangeSaving, setExchangeSaving] = useState(false);
   const [telegramSaving, setTelegramSaving] = useState(false);
   const [notice, setNotice] = useState("");
@@ -533,35 +211,31 @@ export default function App() {
 
   async function loadConfigData() {
     if (!token) return;
-    const [profileRes, runtimeRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
-      fetchRuntimeProfile(token),
-      fetchRuntimeConfig(token),
+    const [goalRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
+      fetchGoalConfig(token),
       fetchExchangeConfig(token),
       fetchTelegramConfig(token),
       fetchSecretsStatus(token),
     ]);
-    setRuntimeProfile(profileRes);
-    setRuntimeConfig(runtimeRes);
-    setRuntimeDraft(runtimeRes);
+    setGoalConfig(goalRes);
+    setGoalForm({
+      symbol: goalRes.symbol,
+      principal_usdt: goalRes.principal_usdt,
+      target_hourly_notional: goalRes.target_hourly_notional,
+      risk_profile: goalRes.risk_profile,
+    });
     setExchangeConfig(exchangeRes);
     setTelegramConfig(telegramRes);
     setSecrets(secretRes);
-    setApiForm((prev) => ({
-      ...prev,
+    setApiForm({
       grvt_api_key: "",
       grvt_api_secret: "",
       grvt_trading_account_id: "",
-      clear_grvt_api_key: false,
-      clear_grvt_api_secret: false,
-      clear_grvt_trading_account_id: false,
-    }));
-    setTelegramForm((prev) => ({
-      ...prev,
+    });
+    setTelegramForm({
       telegram_bot_token: "",
       telegram_chat_id: "",
-      clear_telegram_bot_token: false,
-      clear_telegram_chat_id: false,
-    }));
+    });
   }
 
   useEffect(() => {
@@ -691,44 +365,30 @@ export default function App() {
     }
   }
 
-  async function saveProfile() {
-    if (!runtimeProfile) return;
-    setProfileSaving(true);
+  async function saveGoal() {
+    setGoalSaving(true);
     setNotice("");
     try {
       const payload = {
-        aggressiveness: sliderValue(runtimeProfile.aggressiveness),
-        inventory_tolerance: sliderValue(runtimeProfile.inventory_tolerance),
-        risk_threshold: sliderValue(runtimeProfile.risk_threshold),
+        symbol: goalForm.symbol,
+        principal_usdt: Number(goalForm.principal_usdt),
+        target_hourly_notional: Number(goalForm.target_hourly_notional),
+        risk_profile: goalForm.risk_profile,
+        env_mode: goalConfig?.env_mode || "testnet",
       };
-      const updated = await updateRuntimeProfile(token, payload);
-      setRuntimeProfile(updated);
-      const raw = await fetchRuntimeConfig(token);
-      setRuntimeConfig(raw);
-      setRuntimeDraft(raw);
-      setNotice("自动参数已保存");
+      const updated = await updateGoalConfig(token, payload);
+      setGoalConfig(updated);
+      setGoalForm({
+        symbol: updated.symbol,
+        principal_usdt: updated.principal_usdt,
+        target_hourly_notional: updated.target_hourly_notional,
+        risk_profile: updated.risk_profile,
+      });
+      setNotice("目标参数已保存");
     } catch (err) {
-      setError(err.message || "保存自动参数失败");
+      setError(err.message || "保存目标参数失败");
     } finally {
-      setProfileSaving(false);
-    }
-  }
-
-  async function saveRuntimeAdvanced() {
-    if (!runtimeDraft) return;
-    setRuntimeSaving(true);
-    setNotice("");
-    try {
-      const updated = await updateRuntimeConfig(token, runtimeDraft);
-      setRuntimeConfig(updated);
-      setRuntimeDraft(updated);
-      const profile = await fetchRuntimeProfile(token);
-      setRuntimeProfile(profile);
-      setNotice("高级参数已保存");
-    } catch (err) {
-      setError(err.message || "保存高级参数失败");
-    } finally {
-      setRuntimeSaving(false);
+      setGoalSaving(false);
     }
   }
 
@@ -746,9 +406,6 @@ export default function App() {
         grvt_api_key: apiForm.grvt_api_key,
         grvt_api_secret: apiForm.grvt_api_secret,
         grvt_trading_account_id: apiForm.grvt_trading_account_id,
-        clear_grvt_api_key: apiForm.clear_grvt_api_key,
-        clear_grvt_api_secret: apiForm.clear_grvt_api_secret,
-        clear_grvt_trading_account_id: apiForm.clear_grvt_trading_account_id,
       };
       const updated = await updateExchangeConfig(token, payload);
       setExchangeConfig(updated);
@@ -772,8 +429,6 @@ export default function App() {
       const payload = {
         telegram_bot_token: telegramForm.telegram_bot_token,
         telegram_chat_id: telegramForm.telegram_chat_id,
-        clear_telegram_bot_token: telegramForm.clear_telegram_bot_token,
-        clear_telegram_chat_id: telegramForm.clear_telegram_chat_id,
       };
       const updated = await updateTelegramConfig(token, payload);
       setTelegramConfig(updated);
@@ -798,6 +453,13 @@ export default function App() {
   const summary = metrics?.summary || {};
   const series = metrics?.series || {};
   const wsMeta = wsStateMeta[wsState] || wsStateMeta.disconnected;
+  const selectedRisk = riskProfileOptions.find((x) => x.value === goalForm.risk_profile);
+  const topOrders = [...orders]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 5);
+  const topTrades = [...trades]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 5);
 
   return (
     <div className="page">
@@ -838,38 +500,20 @@ export default function App() {
           <strong>{fmt(summary.pnl_total, 2)}</strong>
         </div>
         <div className="card">
-          <span>当日PnL</span>
-          <strong>{fmt(summary.pnl_daily, 2)}</strong>
-        </div>
-        <div className="card">
           <span>净仓名义</span>
           <strong>{fmt(summary.inventory_notional, 2)}</strong>
-        </div>
-        <div className="card">
-          <span>动态价差(bps)</span>
-          <strong>{fmt(summary.spread_bps, 2)}</strong>
-        </div>
-        <div className="card">
-          <span>实时波动(sigma)</span>
-          <strong>{fmt(summary.sigma, 6)}</strong>
         </div>
         <div className="card">
           <span>运行时长</span>
           <strong>{formatDuration(summary.run_duration_sec)}</strong>
         </div>
         <div className="card">
-          <span>累计交易量</span>
+          <span>本次策略成交量</span>
           <strong>{fmt(summary.total_trade_volume_notional, 2)}</strong>
         </div>
         <div className="card">
-          <span>累计成交笔数</span>
-          <strong>{fmt(summary.total_trade_count, 0)}</strong>
-        </div>
-        <div className="card">
-          <span>手续费(返佣/成本)</span>
-          <strong>
-            {fmt(summary.total_fee_rebate, 4)} / {fmt(summary.total_fee_cost, 4)}
-          </strong>
+          <span>每万交易额磨损</span>
+          <strong>{fmt(summary.wear_per_10k, 2)}</strong>
         </div>
       </section>
 
@@ -884,63 +528,75 @@ export default function App() {
 
       <section className="panel-grid">
         <div className="panel">
-          <h2>自动参数（默认）</h2>
-          <p className="panel-tip">默认使用三旋钮自动映射。你也可以展开高级参数手动覆盖全部运行参数。</p>
-          {runtimeProfile && (
-            <div className="slider-grid">
-              {profileFieldMeta.map((field) => (
-                <SliderField
-                  key={field.key}
-                  label={field.label}
-                  value={runtimeProfile[field.key]}
-                  hint={field.hint}
-                  onChange={(value) => setRuntimeProfile((prev) => ({ ...prev, [field.key]: value }))}
-                />
-              ))}
-              <button className="btn-primary" disabled={profileSaving} onClick={saveProfile}>
-                {profileSaving ? "保存中..." : "保存自动参数"}
-              </button>
-              <div className="preview-list">
-                <div>风险系数 γ: {fmt(runtimeProfile.runtime_preview?.base_gamma, 3)}</div>
-                <div>最小价差(bps): {fmt(runtimeProfile.runtime_preview?.min_spread_bps, 2)}</div>
-                <div>最大价差(bps): {fmt(runtimeProfile.runtime_preview?.max_spread_bps, 2)}</div>
-                <div>库存占比上限: {fmt(runtimeProfile.runtime_preview?.max_inventory_notional_pct, 3)}</div>
-                <div>
-                  动态库存名义估算:{" "}
-                  {fmt((summary.equity || 0) * (runtimeProfile.runtime_preview?.max_inventory_notional_pct || 0), 2)}
-                </div>
-                <div>回撤熔断(%): {fmt(runtimeProfile.runtime_preview?.drawdown_kill_pct, 2)}</div>
-              </div>
-            </div>
-          )}
-
-          <div className="advanced-toggle">
-            <button onClick={() => setAdvancedOpen((s) => !s)}>
-              {advancedOpen ? "收起高级参数" : "展开高级参数（全量可调）"}
+          <h2>目标配置（极简）</h2>
+          <p className="panel-tip">只需要填写本金、目标小时交易量、风险档位，后端会自动映射全部运行参数。</p>
+          <div className="form-grid">
+            <label>
+              <span>本金(USDT)</span>
+              <input
+                type="number"
+                step="0.1"
+                min="1"
+                value={goalForm.principal_usdt}
+                onChange={(e) => setGoalForm((s) => ({ ...s, principal_usdt: e.target.value }))}
+              />
+            </label>
+            <label>
+              <span>目标小时交易量(USDT)</span>
+              <input
+                type="number"
+                step="1"
+                min="100"
+                value={goalForm.target_hourly_notional}
+                onChange={(e) => setGoalForm((s) => ({ ...s, target_hourly_notional: e.target.value }))}
+              />
+            </label>
+            <label>
+              <span>交易对</span>
+              <select value={goalForm.symbol} onChange={(e) => setGoalForm((s) => ({ ...s, symbol: e.target.value }))}>
+                {symbolOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>风险档位</span>
+              <select
+                value={goalForm.risk_profile}
+                onChange={(e) => setGoalForm((s) => ({ ...s, risk_profile: e.target.value }))}
+              >
+                {riskProfileOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>回测环境</span>
+              <input value={goalConfig?.env_mode || "testnet"} readOnly />
+            </label>
+            <button className="btn-primary" disabled={goalSaving} onClick={saveGoal}>
+              {goalSaving ? "保存中..." : "应用目标参数"}
             </button>
           </div>
-
-          {advancedOpen && runtimeDraft && (
-            <div className="runtime-grid">
-              {runtimeFieldMeta.map((meta) => (
-                <RuntimeField
-                  key={meta.key}
-                  meta={meta}
-                  value={runtimeDraft[meta.key]}
-                  onChange={(nextValue) => setRuntimeDraft((prev) => ({ ...prev, [meta.key]: nextValue }))}
-                />
-              ))}
-              <button className="btn-primary" disabled={runtimeSaving} onClick={saveRuntimeAdvanced}>
-                {runtimeSaving ? "保存中..." : "保存高级参数"}
-              </button>
-              {runtimeConfig && <div className="panel-tip">当前配置版本已载入，可随时覆盖保存。</div>}
+          <div className="preview-list">
+            <div>当前风险档解释: {selectedRisk?.hint || "-"}</div>
+            <div>预估单笔名义: {fmt(goalConfig?.runtime_preview?.max_single_order_notional, 2)}</div>
+            <div>预估刷新间隔(秒): {fmt(goalConfig?.runtime_preview?.quote_interval_sec, 2)}</div>
+            <div>
+              预估价差区间(bps): {fmt(goalConfig?.runtime_preview?.min_spread_bps, 2)} ~{" "}
+              {fmt(goalConfig?.runtime_preview?.max_spread_bps, 2)}
             </div>
-          )}
+            <div>每万交易额磨损: {fmt(summary.wear_per_10k, 2)}</div>
+          </div>
         </div>
 
         <div className="panel">
           <h2>实盘配置</h2>
-          <p className="panel-tip">默认固定为 GRVT prod 实盘环境，仅在引擎 idle/halted 时允许修改。</p>
+          <p className="panel-tip">服务仍固定为 GRVT prod，仅在引擎 idle/halted 时允许修改凭据。</p>
 
           <div className="readonly-field">
             <span>GRVT 环境</span>
@@ -953,7 +609,6 @@ export default function App() {
               <input
                 type="password"
                 value={apiForm.grvt_api_key}
-                disabled={apiForm.clear_grvt_api_key}
                 placeholder="留空表示保持原值"
                 onChange={(e) => setApiForm((s) => ({ ...s, grvt_api_key: e.target.value }))}
               />
@@ -964,7 +619,6 @@ export default function App() {
               <input
                 type="password"
                 value={apiForm.grvt_api_secret}
-                disabled={apiForm.clear_grvt_api_secret}
                 placeholder="留空表示保持原值"
                 onChange={(e) => setApiForm((s) => ({ ...s, grvt_api_secret: e.target.value }))}
               />
@@ -974,37 +628,9 @@ export default function App() {
               <span>GRVT_TRADING_ACCOUNT_ID</span>
               <input
                 value={apiForm.grvt_trading_account_id}
-                disabled={apiForm.clear_grvt_trading_account_id}
                 placeholder="留空表示保持原值"
                 onChange={(e) => setApiForm((s) => ({ ...s, grvt_trading_account_id: e.target.value }))}
               />
-            </label>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={apiForm.clear_grvt_api_key}
-                onChange={(e) => setApiForm((s) => ({ ...s, clear_grvt_api_key: e.target.checked }))}
-              />
-              <span>清空已保存 API Key</span>
-            </label>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={apiForm.clear_grvt_api_secret}
-                onChange={(e) => setApiForm((s) => ({ ...s, clear_grvt_api_secret: e.target.checked }))}
-              />
-              <span>清空已保存 API Secret</span>
-            </label>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={apiForm.clear_grvt_trading_account_id}
-                onChange={(e) => setApiForm((s) => ({ ...s, clear_grvt_trading_account_id: e.target.checked }))}
-              />
-              <span>清空已保存 Trading Account ID</span>
             </label>
 
             <button className="btn-primary" disabled={!canEditApi || exchangeSaving} onClick={saveExchange}>
@@ -1020,7 +646,6 @@ export default function App() {
               <input
                 type="password"
                 value={telegramForm.telegram_bot_token}
-                disabled={telegramForm.clear_telegram_bot_token}
                 placeholder="留空表示保持原值"
                 onChange={(e) => setTelegramForm((s) => ({ ...s, telegram_bot_token: e.target.value }))}
               />
@@ -1030,28 +655,9 @@ export default function App() {
               <span>TELEGRAM_CHAT_ID</span>
               <input
                 value={telegramForm.telegram_chat_id}
-                disabled={telegramForm.clear_telegram_chat_id}
                 placeholder="留空表示保持原值"
                 onChange={(e) => setTelegramForm((s) => ({ ...s, telegram_chat_id: e.target.value }))}
               />
-            </label>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={telegramForm.clear_telegram_bot_token}
-                onChange={(e) => setTelegramForm((s) => ({ ...s, clear_telegram_bot_token: e.target.checked }))}
-              />
-              <span>清空已保存 Bot Token</span>
-            </label>
-
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={telegramForm.clear_telegram_chat_id}
-                onChange={(e) => setTelegramForm((s) => ({ ...s, clear_telegram_chat_id: e.target.checked }))}
-              />
-              <span>清空已保存 Chat ID</span>
             </label>
 
             <button className="btn-primary" disabled={!canEditApi || telegramSaving} onClick={saveTelegram}>
@@ -1065,8 +671,7 @@ export default function App() {
             <li>GRVT_API_KEY: {exchangeConfig?.grvt_api_key_configured ? "已配置" : "未配置"}</li>
             <li>GRVT_API_SECRET: {exchangeConfig?.grvt_api_secret_configured ? "已配置" : "未配置"}</li>
             <li>
-              GRVT_TRADING_ACCOUNT_ID:{" "}
-              {exchangeConfig?.grvt_trading_account_id_configured ? "已配置" : "未配置"}
+              GRVT_TRADING_ACCOUNT_ID: {exchangeConfig?.grvt_trading_account_id_configured ? "已配置" : "未配置"}
             </li>
             <li>TELEGRAM_BOT_TOKEN: {telegramConfig?.telegram_bot_token_configured ? "已配置" : "未配置"}</li>
             <li>TELEGRAM_CHAT_ID: {telegramConfig?.telegram_chat_id_configured ? "已配置" : "未配置"}</li>
@@ -1090,7 +695,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {orders.map((o) => (
+              {topOrders.map((o) => (
                 <tr key={o.order_id}>
                   <td>{o.order_id}</td>
                   <td>{o.side}</td>
@@ -1117,7 +722,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {trades.map((t) => (
+              {topTrades.map((t) => (
                 <tr key={t.trade_id}>
                   <td>{t.trade_id}</td>
                   <td>{t.side}</td>
@@ -1136,3 +741,4 @@ export default function App() {
     </div>
   );
 }
+

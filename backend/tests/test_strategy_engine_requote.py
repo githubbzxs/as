@@ -9,6 +9,8 @@ def test_collect_requote_reasons_classification():
         only_buy=False,
         buy_dev=False,
         sell_dev=True,
+        buy_size_dev=False,
+        sell_size_dev=False,
         ttl_expired=True,
     )
 
@@ -25,6 +27,8 @@ def test_collect_requote_reasons_inventory_limit():
         only_buy=False,
         buy_dev=False,
         sell_dev=False,
+        buy_size_dev=False,
+        sell_size_dev=False,
         ttl_expired=False,
     )
 

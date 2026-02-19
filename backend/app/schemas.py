@@ -6,6 +6,24 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+SUPPORTED_GOAL_SYMBOLS: tuple[str, ...] = (
+    "BNB_USDT_Perp",
+    "XRP_USDT_Perp",
+    "SUI_USDT_Perp",
+)
+_SUPPORTED_GOAL_SYMBOLS_MAP = {symbol.lower(): symbol for symbol in SUPPORTED_GOAL_SYMBOLS}
+
+
+def normalize_symbol_text(value: str) -> str:
+    text = str(value or "").strip().replace("-", "_")
+    if not text:
+        return "BNB_USDT_Perp"
+    upper = text.upper()
+    if upper.endswith("_PERP"):
+        return f"{upper[:-5]}_Perp"
+    return text
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -38,6 +56,7 @@ class RuntimeConfig(BaseModel):
     max_spread_bps: float = Field(default=6.0, ge=1)
 
     requote_threshold_bps: float = Field(default=0.3, ge=0.1)
+    requote_size_threshold_ratio: float = Field(default=0.15, ge=0.0, le=1.0)
     order_ttl_sec: int = Field(default=15, ge=1, le=300)
     quote_interval_sec: float = Field(default=0.45, ge=0.2, le=10)
     min_order_size_base: float = Field(default=0.01, ge=0.000001)
@@ -73,6 +92,11 @@ class RuntimeConfig(BaseModel):
             raise ValueError("max_spread_bps 不能小于 min_spread_bps")
         return v
 
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return normalize_symbol_text(value)
+
 
 class RuntimeProfileConfig(BaseModel):
     aggressiveness: float = Field(default=55.0, ge=0, le=100)
@@ -82,6 +106,31 @@ class RuntimeProfileConfig(BaseModel):
 
 class RuntimeProfileView(RuntimeProfileConfig):
     runtime_preview: dict[str, float | int]
+
+
+RiskProfile = Literal["safe", "balanced", "throughput"]
+GoalEnvMode = Literal["prod", "testnet"]
+
+
+class GoalConfig(BaseModel):
+    symbol: str = "BNB_USDT_Perp"
+    principal_usdt: float = Field(default=10.0, ge=1.0)
+    target_hourly_notional: float = Field(default=10000.0, ge=100.0)
+    risk_profile: RiskProfile = "throughput"
+    env_mode: GoalEnvMode = "testnet"
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        normalized = normalize_symbol_text(value)
+        canonical = _SUPPORTED_GOAL_SYMBOLS_MAP.get(normalized.lower())
+        if canonical is None:
+            raise ValueError(f"symbol 仅支持: {', '.join(SUPPORTED_GOAL_SYMBOLS)}")
+        return canonical
+
+
+class GoalConfigView(GoalConfig):
+    runtime_preview: dict[str, float | int | str]
 
 
 class ExchangeConfigUpdateRequest(BaseModel):
@@ -163,6 +212,11 @@ class MetricsSummary(BaseModel):
     run_duration_sec: float = 0.0
     total_trade_count: int = 0
     total_trade_volume_notional: float = 0.0
+    trade_volume_notional_1h: float = 0.0
+    target_hourly_notional: float = 0.0
+    target_completion_ratio: float = 0.0
+    target_completion_ratio_session: float = 0.0
+    wear_per_10k: float = 0.0
     total_fee: float = 0.0
     total_fee_rebate: float = 0.0
     total_fee_cost: float = 0.0
@@ -197,3 +251,38 @@ class StreamEnvelope(BaseModel):
     type: str
     ts: datetime
     payload: dict
+
+
+BacktestJobStatus = Literal["queued", "running", "completed", "failed"]
+
+
+class BacktestJobRequest(BaseModel):
+    data_file: str
+    symbol: str = "BNB_USDT_Perp"
+    principal_usdt: float = Field(default=10.0, ge=1.0)
+    target_hourly_notional: float = Field(default=10000.0, ge=100.0)
+    risk_profile: RiskProfile = "throughput"
+
+
+class BacktestJobView(BaseModel):
+    job_id: str
+    status: BacktestJobStatus
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class BacktestReport(BaseModel):
+    symbol: str
+    points: int
+    fills: int
+    total_notional: float
+    estimated_hourly_notional: float
+    target_hourly_notional: float
+    target_completion_ratio: float
+    max_drawdown_pct: float
+    max_inventory_notional: float
+    final_equity: float
+    runtime_preview: dict[str, float | int | str]
+    started_at: datetime
+    ended_at: datetime

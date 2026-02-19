@@ -1,5 +1,25 @@
 ﻿# AGENTS.md
 
+## 部署
+
+- 合适时调用 `skill:deploy`。
+- 默认部署目标：DO 最小杯伦敦（`144.126.234.61`，`root@22`）。
+
+### 部署信息（供 `skill:deploy` 使用）
+
+- 香港：
+  - ip：`103.52.152.92`
+  - 密码：`DGA7PMU5WmBQ`
+  - ssh 信息：`root@22`
+- DO 最小杯伦敦：
+  - ip：`144.126.234.61`
+  - 密码：`cb7989f02d835a430437675e87!`
+  - ssh 信息：`root@22`
+- 大陆：
+  - ip：`106.15.59.92`
+  - 密码：`486QWQqwq`
+  - ssh 信息：`Administrator@22`
+
 ## Facts
 
 - **[2026-02-19] 项目目标**：交付 GRVT 做市实盘首版，范围仅下单、监控、API Key 配置，不含回测模块。
@@ -65,6 +85,48 @@
 - **[2026-02-19] 前端参数面板升级**：保留三旋钮自动模式，新增“高级参数（全量可调）”折叠面板，并为每个参数展示含义与调参影响。
   - Impact：`frontend/src/App.jsx`、`frontend/src/styles.css`
 
+- **[2026-02-19] 参数交互彻底简化**：前端已切换为“目标参数极简模式”（本金/目标小时交易量/风险档位），移除高级参数入口。
+  - Why：用户反馈参数过多难以调整，需要 user-friendly 的单入口配置。
+  - Impact：`frontend/src/App.jsx`、`frontend/src/api.js`
+
+- **[2026-02-19] 目标配置模型落地**：后端新增 `GoalConfig` 与 `/api/config/goal`，并把 `runtime_config.json` 升级为 `runtime_config + goal_config` 双配置结构。
+  - Impact：`backend/app/schemas.py`、`backend/app/services/runtime_config.py`、`backend/app/services/goal_mapper.py`、`backend/app/api/config.py`、`backend/data/runtime_config.json`
+
+- **[2026-02-19] 成交目标闭环新增**：引擎加入 60 秒节拍的成交量目标调节器（按最近 1 小时成交量偏差微调价差/循环间隔，单次 10% 限幅）。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/services/monitoring.py`、`backend/app/schemas.py`
+
+- **[2026-02-19] 简化回测子系统新增**：新增 CSV 数据回放引擎、异步任务服务、CLI 与 API 查询接口。
+  - Impact：`backend/app/backtest/engine.py`、`backend/app/backtest/service.py`、`backend/app/backtest/run.py`、`backend/app/api/backtest.py`、`backend/app/main.py`、`backend/app/core/container.py`
+
+- **[2026-02-19] 达成率主口径切换**：监控与前端主展示改为“启动累计达成率”（按启动后累计成交额/运行时长折算目标），保留“近1小时达成率”用于内部调节。
+  - Why：修复滚动窗口导致的“达成率倒退”体验。
+  - Impact：`backend/app/services/monitoring.py`、`backend/app/schemas.py`、`frontend/src/App.jsx`
+
+- **[2026-02-19] 策略磨损指标新增**：新增统一指标 `wear_per_10k`，口径为 `-pnl_total / total_trade_volume_notional * 10000`。
+  - Impact：`backend/app/services/monitoring.py`、`backend/app/schemas.py`、`frontend/src/App.jsx`
+
+- **[2026-02-19] 下单量重挂触发补齐**：重挂判定新增数量偏差条件，支持在目标参数变化后自动按新单量撤挂重下。
+  - Why：修复“改目标后每单数量不变化”的行为缺口。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_startup.py`
+
+- **[2026-02-19] 交易对配置扩展**：GoalConfig 新增 `symbol` 并支持 `BNB_USDT_Perp/XRP_USDT_Perp/SUI_USDT_Perp`；运行中仅允许改目标参数，不允许切换交易对。
+  - Impact：`backend/app/schemas.py`、`backend/app/services/goal_mapper.py`、`backend/app/api/config.py`、`frontend/src/App.jsx`
+
+- **[2026-02-19] 配置界面简化**：前端移除动态价差/实时波动卡片、移除清空密钥复选框，挂单/成交表改为仅显示最近 5 条。
+  - Impact：`frontend/src/App.jsx`
+
+- **[2026-02-19] 指标展示再次精简**：前端已移除当日 PnL、近 1 小时成交量与达成率，仅保留“本次策略成交量（累计）”作为成交量主展示。
+  - Why：按用户要求降低噪音，避免多口径造成误解。
+  - Impact：`frontend/src/App.jsx`
+
+- **[2026-02-19] 50x 口径映射落地**：GoalConfig 映射运行参数时固定按 `principal_usdt * 50` 作为有效资金，参与单笔名义与库存上限计算。
+  - Why：解决“小本金下参数变化对实际下单量不敏感”的问题。
+  - Impact：`backend/app/services/goal_mapper.py`、`backend/tests/test_goal_mapper.py`
+
+- **[2026-02-19] 库存与单笔联动约束**：新增硬约束 `max_inventory_notional >= max_single_order_notional * 1.8`，并将单边挂单触发阈值提升为 `1.5x max_inventory_notional`。
+  - Why：减少“一成交就单边挂单”的误触发。
+  - Impact：`backend/app/services/goal_mapper.py`、`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_startup.py`
+
 ## Decisions
 
 - **[2026-02-19] 策略框架**：采用 Avellaneda-Stoikov + 基础自适应（波动率/深度/成交强度）。
@@ -103,6 +165,22 @@
   - Why：在高波动场景下，仓位清理优先级高于进程快速返回。
   - Impact：`backend/app/engine/strategy_engine.py`
 
+- **[2026-02-19] 参数设计改为目标驱动**：放弃前端三旋钮+高级参数暴露，改为 GoalConfig 单入口映射运行参数。
+  - Why：降低配置理解门槛，确保 10u 小本金下可快速调到目标成交量模式。
+  - Impact：`frontend/src/App.jsx`、`backend/app/services/goal_mapper.py`
+
+- **[2026-02-19] 运行中配置边界收敛**：`/api/config/goal` 在运行态仅允许更新同币对参数，禁止运行中切换交易对。
+  - Why：避免中途换标的导致残单/仓位语义不一致。
+  - Impact：`backend/app/api/config.py`
+
+- **[2026-02-19] 杠杆参数交互决策**：杠杆不开放前端调节，当前固定按 50x 生效于参数映射。
+  - Why：优先满足快速试参与稳定口径，减少误配复杂度。
+  - Impact：`backend/app/services/goal_mapper.py`、`backend/app/engine/strategy_engine.py`
+
+- **[2026-02-19] 线上与回测环境分离**：在线服务保持 `prod`，回测任务默认 `testnet` 语义（不触发真实交易）。
+  - Why：保持现有线上链路稳定，同时满足测试流量与参数验证需求。
+  - Impact：`backend/app/schemas.py`、`backend/app/api/config.py`、`backend/app/backtest/*`
+
 ## Commands
 
 - **[2026-02-19] 后端启动**：`cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload`
@@ -111,6 +189,8 @@
 - **[2026-02-19] 测试**：`cd backend && pytest -q`
 - **[2026-02-19] 前端构建验证**：`cd frontend && npm run build`
 - **[2026-02-19] 域名探活**：`curl -I http://as.0xpsyche.me`、`curl -I https://as.0xpsyche.me`
+- **[2026-02-19] 简化回测 CLI**：`cd backend && python -m app.backtest.run --data <csv路径> --principal 10 --target-hourly 10000 --risk-profile throughput`
+- **[2026-02-19] 回测 API**：`POST /api/backtest/jobs` -> `GET /api/backtest/jobs/{job_id}` -> `GET /api/backtest/jobs/{job_id}/report`
 
 ## Status / Next
 
@@ -134,6 +214,28 @@
 
 - **[2026-02-19] 当前状态（部署完成）**：代码已推送 `origin/main`（HEAD `73233ae`），并通过应急 `scp` 路径重部署到香港机 `103.52.152.92`；`grvt-mm` active、`:18081` 监听、`/healthz` 正常。
   - Next：补齐香港机仓库的 Git 一致性（当前非 Git 工作树），恢复主干 `git pull --rebase` 部署路径。
+
+- **[2026-02-19] 当前状态（参数极简+回测）**：`GoalConfig`、成交量目标闭环、简化回测子系统、前端极简参数面板已落地；后端测试 `44 passed`，前端构建通过。
+  - Next：按“纽约+香港回放、伦敦回归”执行服务器侧测试与结果对比，校验目标达成率区间。
+
+- **[2026-02-19] 当前状态（服务器验证）**：香港机 `103.52.152.92` 已同步新代码并通过后端测试 `44 passed`、前端构建与健康检查（`grvt-mm active`、`:18081` 监听、`/healthz` 正常）。
+  - Next：补齐伦敦机回归验证并对比三机结果差异。
+
+- **[2026-02-19] 当前状态（双机回放）**：香港机与纽约机均已执行同一份样例 CSV 回放，结果一致（`estimated_hourly_notional=7500`，目标达成率 `0.75`）。
+  - Next：替换为更长时段真实样本数据，验证 24h 口径稳定性。
+
+- **[2026-02-19] 当前状态（伦敦重部署）**：伦敦机 `144.126.234.61` 已通过应急 tar 包重部署最新本地工作区，服务器侧后端测试 `44 passed`，`grvt-mm` 运行在 `:18081` 且 `/healthz` 返回正常；域名 `as.0xpsyche.me` 探活为 HTTP 301、HTTPS 405（GET 限制）。
+  - Next：将本地未提交变更整理并推送 `origin/main`，恢复 Git 主干部署路径。
+
+- **[2026-02-19] 当前状态（口径与交互修复）**：已完成启动累计达成率、每万磨损指标、改单量重挂触发、币对可选（BNB/XRP/SUI）、运行中禁切币对、前端参数与表格精简；后端测试 `47 passed`，前端构建通过。
+  - Next：实盘观察 30-60 分钟内 `wear_per_10k` 与 `target_completion_ratio_session` 的稳定性，并结合新增延迟诊断做下一轮参数微调。
+
+- **[2026-02-19] 当前状态（伦敦再次重部署）**：伦敦机 `144.126.234.61` 已通过应急 `scp+tar` 同步本地最新改动并完成前端构建；`grvt-mm` active、`:18081` 监听、`/healthz` 正常，`DEPLOY_COMMIT=d7c0364-dirty-20260220_001612`。
+  - Why：远端 `/opt/grvt-mm` 仍非 Git 工作树，无法走 `git pull --rebase` 主干路径。
+  - Next：将本地变更推送 `origin/main` 后修复伦敦机仓库为可 Git 更新状态，恢复主干部署链路。
+
+- **[2026-02-19] 当前状态（口径修复）**：已完成“去当日PnL/去达成率/单成交量展示”、50x 映射与单边阈值修复，新增回归测试；后端测试 `51 passed`，前端构建通过。
+  - Next：实盘观察 15-30 分钟，重点确认“改单量后实际挂单量变化”与“成交后是否仍稳定双边挂单（未超 1.5x 库存阈值）”。
 
 ## Known Issues
 
@@ -181,3 +283,15 @@
 - **[2026-02-19] 香港机部署路径异常**：`/opt/grvt-mm` 当前不是 Git 仓库，无法执行主干 `git pull --rebase`，本次采用最小文件 `scp` 应急同步。
   - Why：远端缺失 `.git` 元数据，`git rev-parse` 返回 “not a git repository”。
   - Verify：`cat /opt/grvt-mm/DEPLOY_COMMIT` 为 `73233ae`，`systemctl is-active grvt-mm` 为 `active`，`curl http://127.0.0.1:18081/healthz` 返回 `{"ok":true}`。
+
+- **[2026-02-19] 回测输入数据格式约束**：简化回测 CSV 需包含 `timestamp` 与 `mid/mid_price/price/close` 字段之一；缺字段会直接失败。
+  - Why：当前回放引擎采用最小输入模型，不做复杂字段推断。
+  - Verify：调用 `POST /api/backtest/jobs` 时若缺字段应返回 400，字段完整应进入 `completed`。
+
+- **[2026-02-19] 纽约机运行依赖缺失**：纽约机初始缺少 `python3-venv` 与 `pip3`，回放前需先安装运行时工具链。
+  - Why：系统镜像较轻，未预装 Python 开发组件。
+  - Verify：`python3 -m venv .venv` 与 `pip3 --version` 可执行后再跑 `python -m app.backtest.run`。
+
+- **[2026-02-19] 伦敦机关停卡顿告警**：重启时可能因旧进程处于“平仓无限重试”而触发 `systemd stop-sigterm timeout`，随后被 SIGKILL 再拉起；新进程可正常恢复监听 `18081`。
+  - Why：日志显示停止阶段持续出现 `KeyError: 'IOC'`（`flatten_position_taker` 路径），导致优雅退出超时。
+  - Verify：`journalctl -u grvt-mm -n 200 --no-pager | egrep "KeyError: 'IOC'|stop-sigterm"`；重启后需满足 `systemctl is-active grvt-mm` 为 `active` 且 `curl -fsS http://127.0.0.1:18081/healthz` 返回 `{"ok":true}`。

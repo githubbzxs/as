@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from app.core.settings import Settings
 from app.engine.strategy_engine import StrategyEngine
 from app.exchange.base import ExchangeAdapter
+from app.backtest.service import BacktestService
 from app.services.alerting import AlertService
 from app.services.event_bus import EventBus
 from app.services.exchange_config import ExchangeConfigStore
@@ -23,4 +24,5 @@ class AppContainer:
     monitor: MonitoringService
     event_bus: EventBus
     alert_service: AlertService
+    backtest_service: BacktestService
     engine: StrategyEngine

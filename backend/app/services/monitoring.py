@@ -18,9 +18,11 @@ class MonitoringService:
         self._session_started_at = datetime.now(timezone.utc)
         self._total_trade_count = 0
         self._total_trade_volume_notional = 0.0
+        self._target_hourly_notional = 0.0
         self._total_fee = 0.0
         self._total_fee_rebate = 0.0
         self._total_fee_cost = 0.0
+        self._trade_notional_events: deque[tuple[datetime, float]] = deque(maxlen=max_points * 200)
         self._summary = MetricsSummary(
             timestamp=datetime.now(timezone.utc),
             mid_price=0.0,
@@ -41,6 +43,11 @@ class MonitoringService:
             run_duration_sec=0.0,
             total_trade_count=0,
             total_trade_volume_notional=0.0,
+            trade_volume_notional_1h=0.0,
+            target_hourly_notional=0.0,
+            target_completion_ratio=0.0,
+            target_completion_ratio_session=0.0,
+            wear_per_10k=0.0,
             total_fee=0.0,
             total_fee_rebate=0.0,
             total_fee_cost=0.0,
@@ -76,6 +83,7 @@ class MonitoringService:
         self._total_fee = 0.0
         self._total_fee_rebate = 0.0
         self._total_fee_cost = 0.0
+        self._trade_notional_events.clear()
         self._seen_trade_keys.clear()
         self._seen_trade_queue.clear()
         self._cancel_events.clear()
@@ -102,6 +110,24 @@ class MonitoringService:
             else float(maker_fill_count_1m)
         )
         run_duration = max(0.0, (now - self._session_started_at).total_seconds())
+        trade_volume_notional_1h = self.trade_volume_notional_last_1h(now)
+        target_completion_ratio = 0.0
+        if self._target_hourly_notional > 0:
+            target_completion_ratio = trade_volume_notional_1h / self._target_hourly_notional
+        run_duration_hours = max(run_duration / 3600.0, 1.0 / 60.0)
+        target_completion_ratio_session = 0.0
+        if self._target_hourly_notional > 0:
+            target_completion_ratio_session = (
+                self._total_trade_volume_notional
+                / (self._target_hourly_notional * run_duration_hours)
+            )
+        wear_per_10k = 0.0
+        if self._total_trade_volume_notional > 0:
+            wear_per_10k = (
+                -float(tick.pnl_total)
+                / self._total_trade_volume_notional
+                * 10000.0
+            )
 
         ages = self._open_order_ages(now)
         time_in_book_p50 = self._percentile(ages, 0.5)
@@ -129,6 +155,11 @@ class MonitoringService:
             run_duration_sec=run_duration,
             total_trade_count=self._total_trade_count,
             total_trade_volume_notional=self._total_trade_volume_notional,
+            trade_volume_notional_1h=trade_volume_notional_1h,
+            target_hourly_notional=self._target_hourly_notional,
+            target_completion_ratio=target_completion_ratio,
+            target_completion_ratio_session=target_completion_ratio_session,
+            wear_per_10k=wear_per_10k,
             total_fee=self._total_fee,
             total_fee_rebate=self._total_fee_rebate,
             total_fee_cost=self._total_fee_cost,
@@ -172,7 +203,9 @@ class MonitoringService:
                 self._seen_trade_keys.discard(old)
 
             self._total_trade_count += 1
-            self._total_trade_volume_notional += abs(float(trade.price) * float(trade.size))
+            notional = abs(float(trade.price) * float(trade.size))
+            self._total_trade_volume_notional += notional
+            self._trade_notional_events.append((trade.created_at, notional))
             self._total_fee += float(trade.fee)
             if trade.fee < 0:
                 self._total_fee_rebate += abs(float(trade.fee))
@@ -180,6 +213,14 @@ class MonitoringService:
                 self._total_fee_cost += float(trade.fee)
 
         self._recent_trades = ordered[-100:]
+
+    def set_target_hourly_notional(self, target_hourly_notional: float) -> None:
+        self._target_hourly_notional = max(0.0, float(target_hourly_notional))
+
+    def trade_volume_notional_last_1h(self, now: datetime | None = None) -> float:
+        point = now or datetime.now(timezone.utc)
+        self._trim_trade_notional_events(point, window_sec=3600.0)
+        return sum(notional for _, notional in self._trade_notional_events)
 
     @property
     def summary(self) -> MetricsSummary:
@@ -200,6 +241,10 @@ class MonitoringService:
     def _trim_window(rows: deque[datetime], now: datetime, window_sec: float) -> None:
         while rows and (now - rows[0]).total_seconds() > window_sec:
             rows.popleft()
+
+    def _trim_trade_notional_events(self, now: datetime, window_sec: float) -> None:
+        while self._trade_notional_events and (now - self._trade_notional_events[0][0]).total_seconds() > window_sec:
+            self._trade_notional_events.popleft()
 
     def _open_order_ages(self, now: datetime) -> list[float]:
         ages: list[float] = []

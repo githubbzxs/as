@@ -6,10 +6,9 @@
 - 7x24 自动做市（只读预热 + 自动恢复）
 - Post-only 限价下单
 - 三重熔断（连续失败/回撤/异常波动）
-- WebUI（登录、启停、监控、参数时序、参数热更新）
+- WebUI（登录、启停、监控、极简目标参数配置）
 - API 配置管理（UI 可写入，密钥不回显）
-
-> 首版不包含回测模块。
+- 简化回测子系统（CSV 数据回放 + 目标成交量评估）
 
 ## 目录结构
 
@@ -20,6 +19,7 @@ backend/
     core/              # 配置、鉴权、依赖
     engine/            # AS 模型、自适应、风控、主引擎
     exchange/          # GRVT 适配层（live）
+    backtest/          # 简化回测引擎与任务服务
     services/          # 监控、事件总线、告警、运行配置
   tests/               # 单元测试
 frontend/
@@ -102,20 +102,26 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 - `PUT /api/config/runtime`
 - `GET /api/config/runtime/profile`
 - `PUT /api/config/runtime/profile`
+- `GET /api/config/goal`
+- `PUT /api/config/goal`
 - `GET /api/config/exchange`
 - `PUT /api/config/exchange`
 - `GET /api/config/telegram`
 - `PUT /api/config/telegram`
 - `GET /api/config/secrets/status`
+- `POST /api/backtest/jobs`
+- `GET /api/backtest/jobs/{job_id}`
+- `GET /api/backtest/jobs/{job_id}/report`
 - `WS /ws/stream?token=...`
 
-## 自动参数与 API 配置规则
+## 目标参数与 API 配置规则
 
-- 参数面板默认采用“三旋钮自动模式”：`做市激进度`、`库存容忍度`、`风险阈值`
-- 后端会将三旋钮映射到内部运行参数，并继续执行实时自适应
+- 参数面板默认采用“目标参数模式”：`本金`、`目标小时交易量`、`风险档位`
+- 后端会将目标参数映射到内部运行参数，并结合最近 1 小时成交量做小步调节
 - 实盘环境固定为 `prod`，UI 不提供环境切换入口
 - API/TG 配置保存后密钥不会回显，仅展示“已配置/未配置”
 - 当引擎状态不是 `idle/halted` 时，`PUT /api/config/exchange` 会返回 `409`，避免运行中误改凭证
+- 兼容接口 `PUT /api/config/runtime` 与 `PUT /api/config/runtime/profile` 仍可用，但前端默认不再暴露
 
 ## 测试
 

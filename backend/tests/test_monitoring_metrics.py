@@ -44,6 +44,7 @@ def test_monitoring_accumulates_trade_volume_and_fee_split():
     now = utcnow()
     monitor = MonitoringService(max_points=100)
     monitor.reset_session(started_at=now - timedelta(seconds=120))
+    monitor.set_target_hourly_notional(10000.0)
 
     trades = [
         TradeSnapshot(trade_id="t1", side="buy", price=100.0, size=0.3, fee=-0.02, created_at=now),
@@ -61,6 +62,15 @@ def test_monitoring_accumulates_trade_volume_and_fee_split():
     assert summary.total_fee_cost == 0.03
     assert summary.pnl_total == 25.0
     assert summary.pnl_daily == 12.0
+    assert summary.trade_volume_notional_1h > 0
+    assert summary.target_hourly_notional == 10000.0
+    assert summary.target_completion_ratio > 0
+    expected_ratio = summary.total_trade_volume_notional / (
+        summary.target_hourly_notional * max(summary.run_duration_sec / 3600.0, 1.0 / 60.0)
+    )
+    assert abs(summary.target_completion_ratio_session - expected_ratio) < 1e-9
+    expected_wear = -summary.pnl_total / summary.total_trade_volume_notional * 10000.0
+    assert abs(summary.wear_per_10k - expected_wear) < 1e-9
 
 
 def test_monitoring_dedup_trade_by_trade_id():

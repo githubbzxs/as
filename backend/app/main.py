@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, config, engine, monitor, ws
+from app.api import auth, backtest, config, engine, monitor, ws
+from app.backtest.service import BacktestService
 from app.core.container import AppContainer
 from app.core.settings import get_settings
 from app.engine.strategy_engine import StrategyEngine
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     monitor_service = MonitoringService(max_points=1200)
     event_bus = EventBus(queue_size=settings.stream_queue_size)
     alert_service = AlertService(telegram_config_store)
+    backtest_service = BacktestService(settings)
     adapter = build_exchange_adapter(
         settings,
         grvt_env=exchange_cfg.grvt_env,
@@ -70,6 +72,7 @@ def create_app() -> FastAPI:
         monitor=monitor_service,
         event_bus=event_bus,
         alert_service=alert_service,
+        backtest_service=backtest_service,
         engine=strategy_engine,
     )
 
@@ -77,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(engine.router)
     app.include_router(monitor.router)
     app.include_router(config.router)
+    app.include_router(backtest.router)
     app.include_router(ws.router)
 
     frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
