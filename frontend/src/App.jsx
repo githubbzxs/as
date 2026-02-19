@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import {
   fetchExchangeConfig,
   fetchMetrics,
   fetchOpenOrders,
   fetchRecentTrades,
+  fetchRuntimeConfig,
   fetchRuntimeProfile,
   fetchSecretsStatus,
   fetchStatus,
@@ -12,6 +13,7 @@ import {
   startEngine,
   stopEngine,
   updateExchangeConfig,
+  updateRuntimeConfig,
   updateRuntimeProfile,
   updateTelegramConfig,
 } from "./api";
@@ -36,6 +38,250 @@ const profileFieldMeta = [
   },
 ];
 
+const runtimeFieldMeta = [
+  {
+    key: "symbol",
+    label: "交易对",
+    type: "text",
+    meaning: "策略运行标的。",
+    up: "切换到更活跃标的可能提升成交。",
+    down: "低流动标的会降低成交节奏。",
+  },
+  {
+    key: "equity_risk_pct",
+    label: "权益风险占比",
+    type: "number",
+    step: 0.001,
+    meaning: "单轮下单规模参考权益比例。",
+    up: "成交与风险都放大。",
+    down: "风险降低但成交变慢。",
+  },
+  {
+    key: "max_inventory_notional_pct",
+    label: "库存名义占比上限",
+    type: "number",
+    step: 0.01,
+    meaning: "库存上限=权益×该比例。",
+    up: "允许更大净仓。",
+    down: "更快触发库存限制。",
+  },
+  {
+    key: "max_inventory_notional",
+    label: "固定库存上限(兼容)",
+    type: "number",
+    step: 1,
+    meaning: "占比模式关闭时使用的固定值。",
+    up: "容忍更大净仓。",
+    down: "仓位控制更紧。",
+  },
+  {
+    key: "max_single_order_notional",
+    label: "单笔最大名义",
+    type: "number",
+    step: 1,
+    meaning: "每笔挂单名义上限。",
+    up: "单笔成交能力提高。",
+    down: "下单冲击更小。",
+  },
+  {
+    key: "min_spread_bps",
+    label: "最小价差(bps)",
+    type: "number",
+    step: 0.01,
+    meaning: "报价下限。",
+    up: "更保守。",
+    down: "更贴盘口。",
+  },
+  {
+    key: "max_spread_bps",
+    label: "最大价差(bps)",
+    type: "number",
+    step: 0.01,
+    meaning: "报价上限。",
+    up: "波动时更保守。",
+    down: "始终更激进。",
+  },
+  {
+    key: "requote_threshold_bps",
+    label: "重报价阈值(bps)",
+    type: "number",
+    step: 0.01,
+    meaning: "盘口偏离触发重挂阈值。",
+    up: "撤改单更少。",
+    down: "跟价更快。",
+  },
+  {
+    key: "order_ttl_sec",
+    label: "挂单TTL(秒)",
+    type: "number",
+    step: 1,
+    meaning: "订单在簿最长停留时间。",
+    up: "驻留更久。",
+    down: "刷新更快。",
+  },
+  {
+    key: "quote_interval_sec",
+    label: "主循环间隔(秒)",
+    type: "number",
+    step: 0.01,
+    meaning: "策略每轮执行间隔。",
+    up: "响应更慢。",
+    down: "响应更快。",
+  },
+  {
+    key: "min_order_size_base",
+    label: "最小下单量保护",
+    type: "number",
+    step: 0.0001,
+    meaning: "防止小于交易所最小量。",
+    up: "最小量拒单更少。",
+    down: "粒度更细。",
+  },
+  {
+    key: "sigma_window_sec",
+    label: "sigma窗口(秒)",
+    type: "number",
+    step: 1,
+    meaning: "波动估计窗口。",
+    up: "曲线更平滑。",
+    down: "响应更灵敏。",
+  },
+  {
+    key: "depth_window_sec",
+    label: "深度窗口(秒)",
+    type: "number",
+    step: 1,
+    meaning: "盘口深度统计窗口。",
+    up: "估计更稳。",
+    down: "反应更快。",
+  },
+  {
+    key: "trade_intensity_window_sec",
+    label: "成交强度窗口(秒)",
+    type: "number",
+    step: 1,
+    meaning: "成交强度统计窗口。",
+    up: "更平滑。",
+    down: "更灵敏。",
+  },
+  {
+    key: "drawdown_kill_pct",
+    label: "回撤熔断阈值(%)",
+    type: "number",
+    step: 0.1,
+    meaning: "权益回撤触发熔断阈值。",
+    up: "更耐受回撤。",
+    down: "更早止损。",
+  },
+  {
+    key: "volatility_kill_zscore",
+    label: "波动熔断Z阈值",
+    type: "number",
+    step: 0.1,
+    meaning: "异常波动触发熔断阈值。",
+    up: "更迟钝。",
+    down: "更敏感。",
+  },
+  {
+    key: "max_consecutive_failures",
+    label: "连续失败阈值",
+    type: "number",
+    step: 1,
+    meaning: "连续失败达到该值熔断。",
+    up: "容错更高。",
+    down: "保护更早。",
+  },
+  {
+    key: "recovery_readonly_sec",
+    label: "恢复只读时长(秒)",
+    type: "number",
+    step: 1,
+    meaning: "风控恢复后的观察时长。",
+    up: "更稳健。",
+    down: "恢复更快。",
+  },
+  {
+    key: "base_gamma",
+    label: "基础γ",
+    type: "number",
+    step: 0.001,
+    meaning: "AS 基础风险厌恶系数。",
+    up: "报价更保守。",
+    down: "报价更激进。",
+  },
+  {
+    key: "gamma_min",
+    label: "γ下限",
+    type: "number",
+    step: 0.001,
+    meaning: "动态γ最小保护值。",
+    up: "最低风险更高。",
+    down: "可更激进。",
+  },
+  {
+    key: "gamma_max",
+    label: "γ上限",
+    type: "number",
+    step: 0.001,
+    meaning: "动态γ最大保护值。",
+    up: "极端时更保守。",
+    down: "上限更低。",
+  },
+  {
+    key: "liquidity_k",
+    label: "流动性k",
+    type: "number",
+    step: 0.01,
+    meaning: "AS 流动性参数。",
+    up: "报价更保守。",
+    down: "报价更贴盘。",
+  },
+  {
+    key: "tg_heartbeat_enabled",
+    label: "Telegram心跳开关",
+    type: "boolean",
+    meaning: "是否发送周期运行摘要。",
+    up: "开启周期摘要。",
+    down: "仅发送关键事件。",
+  },
+  {
+    key: "tg_heartbeat_interval_sec",
+    label: "Telegram心跳间隔(秒)",
+    type: "number",
+    step: 1,
+    meaning: "周期摘要发送间隔。",
+    up: "消息更少。",
+    down: "消息更实时。",
+  },
+  {
+    key: "close_retry_base_delay_sec",
+    label: "平仓重试基础延迟(秒)",
+    type: "number",
+    step: 0.01,
+    meaning: "taker 平仓失败首次重试间隔。",
+    up: "重试更平缓。",
+    down: "重试更快。",
+  },
+  {
+    key: "close_retry_max_delay_sec",
+    label: "平仓重试最大延迟(秒)",
+    type: "number",
+    step: 0.01,
+    meaning: "指数退避最大间隔。",
+    up: "更稳但更慢。",
+    down: "更快重试。",
+  },
+  {
+    key: "close_position_epsilon_base",
+    label: "平仓完成阈值",
+    type: "number",
+    step: 0.000001,
+    meaning: "净仓绝对值小于该值视为平仓完成。",
+    up: "更快判定完成。",
+    down: "更严格清仓。",
+  },
+];
+
 const wsStateMeta = {
   connecting: { label: "连接中", className: "ws-connecting" },
   connected: { label: "已连接", className: "ws-connected" },
@@ -48,6 +294,16 @@ function fmt(value, digits = 4) {
   return Number(value).toFixed(digits);
 }
 
+function formatDuration(seconds) {
+  const sec = Number(seconds);
+  if (!Number.isFinite(sec) || sec < 0) return "-";
+  const total = Math.floor(sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
 function sliderValue(value) {
   if (value === null || value === undefined) return 0;
   const num = Number(value);
@@ -55,30 +311,57 @@ function sliderValue(value) {
   return Math.max(0, Math.min(100, num));
 }
 
-function LineChart({ title, points, color = "#0ea5e9" }) {
-  const values = (points || []).map((p) => Number(p.value));
-  const width = 360;
-  const height = 110;
+function buildSmoothPath(points) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M${points[0].x},${points[0].y}`;
+  let path = `M${points[0].x},${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    path += ` C${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+  }
+  return path;
+}
 
-  const path = useMemo(() => {
-    if (!values.length) return "";
+function LineChart({ title, points, color = "#0ea5e9" }) {
+  const values = (points || []).map((p) => Number(p.value)).filter((v) => Number.isFinite(v));
+  const width = 420;
+  const height = 140;
+  const gradientId = `gradient-${title.replace(/\s+/g, "-").toLowerCase()}`;
+
+  const { linePath, areaPath } = useMemo(() => {
+    if (!values.length) return { linePath: "", areaPath: "" };
     const min = Math.min(...values);
     const max = Math.max(...values);
     const span = max - min || 1;
-    return values
-      .map((v, i) => {
-        const x = (i / Math.max(1, values.length - 1)) * width;
-        const y = height - ((v - min) / span) * height;
-        return `${i === 0 ? "M" : "L"}${x},${y}`;
-      })
-      .join(" ");
+    const coords = values.map((v, i) => ({
+      x: (i / Math.max(1, values.length - 1)) * width,
+      y: height - ((v - min) / span) * (height - 8) - 4,
+    }));
+    const line = buildSmoothPath(coords);
+    const last = coords[coords.length - 1];
+    const area = `${line} L${last.x},${height} L${coords[0].x},${height} Z`;
+    return { linePath: line, areaPath: area };
   }, [values]);
 
   return (
     <div className="chart-card">
       <div className="chart-title">{title}</div>
       <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" preserveAspectRatio="none">
-        <path d={path} fill="none" stroke={color} strokeWidth="2" />
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.0" />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill={`url(#${gradientId})`} className="chart-area" />
+        <path d={linePath} fill="none" stroke={color} strokeWidth="2.5" className="chart-line" />
       </svg>
       <div className="chart-meta">最新: {values.length ? fmt(values[values.length - 1], 6) : "-"}</div>
     </div>
@@ -101,6 +384,46 @@ function SliderField({ label, value, hint, onChange }) {
         onChange={(e) => onChange(Number(e.target.value))}
       />
       <div className="slider-hint">{hint}</div>
+    </label>
+  );
+}
+
+function RuntimeField({ meta, value, onChange }) {
+  if (meta.type === "boolean") {
+    return (
+      <label className="runtime-field runtime-field-checkbox">
+        <div className="runtime-label">{meta.label}</div>
+        <input type="checkbox" checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />
+        <div className="runtime-help">
+          <div>含义：{meta.meaning}</div>
+          <div>调大：{meta.up}</div>
+          <div>调小：{meta.down}</div>
+        </div>
+      </label>
+    );
+  }
+  return (
+    <label className="runtime-field">
+      <div className="runtime-label">{meta.label}</div>
+      <input
+        type={meta.type === "number" ? "number" : "text"}
+        step={meta.step || "any"}
+        value={value ?? ""}
+        onChange={(e) => {
+          if (meta.type === "number") {
+            const num = Number(e.target.value);
+            if (!Number.isFinite(num)) return;
+            onChange(num);
+            return;
+          }
+          onChange(e.target.value);
+        }}
+      />
+      <div className="runtime-help">
+        <div>含义：{meta.meaning}</div>
+        <div>调大：{meta.up}</div>
+        <div>调小：{meta.down}</div>
+      </div>
     </label>
   );
 }
@@ -151,6 +474,9 @@ export default function App() {
   const [status, setStatus] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [runtimeProfile, setRuntimeProfile] = useState(null);
+  const [runtimeConfig, setRuntimeConfig] = useState(null);
+  const [runtimeDraft, setRuntimeDraft] = useState(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [exchangeConfig, setExchangeConfig] = useState(null);
   const [telegramConfig, setTelegramConfig] = useState(null);
   const [secrets, setSecrets] = useState(null);
@@ -173,6 +499,7 @@ export default function App() {
   });
 
   const [profileSaving, setProfileSaving] = useState(false);
+  const [runtimeSaving, setRuntimeSaving] = useState(false);
   const [exchangeSaving, setExchangeSaving] = useState(false);
   const [telegramSaving, setTelegramSaving] = useState(false);
   const [notice, setNotice] = useState("");
@@ -206,13 +533,16 @@ export default function App() {
 
   async function loadConfigData() {
     if (!token) return;
-    const [profileRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
+    const [profileRes, runtimeRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
       fetchRuntimeProfile(token),
+      fetchRuntimeConfig(token),
       fetchExchangeConfig(token),
       fetchTelegramConfig(token),
       fetchSecretsStatus(token),
     ]);
     setRuntimeProfile(profileRes);
+    setRuntimeConfig(runtimeRes);
+    setRuntimeDraft(runtimeRes);
     setExchangeConfig(exchangeRes);
     setTelegramConfig(telegramRes);
     setSecrets(secretRes);
@@ -296,6 +626,12 @@ export default function App() {
               setOrders(msg.payload.open_orders);
             }
           }
+          if (msg.type === "close_retry") {
+            setNotice("正在执行 taker 平仓重试...");
+          }
+          if (msg.type === "close_done") {
+            setNotice("已完成 taker 平仓。");
+          }
         } catch {
           // 忽略非关键消息
         }
@@ -334,6 +670,7 @@ export default function App() {
 
   async function commandStart() {
     try {
+      setError("");
       await startEngine(token);
       await loadTradingData();
       setNotice("引擎已启动");
@@ -344,9 +681,11 @@ export default function App() {
 
   async function commandStop() {
     try {
+      setError("");
+      setNotice("停止中：正在执行撤单与 taker 平仓...");
       await stopEngine(token);
       await loadTradingData();
-      setNotice("引擎已停止");
+      setNotice("引擎已停止并完成平仓");
     } catch (err) {
       setError(err.message || "停止失败");
     }
@@ -364,11 +703,32 @@ export default function App() {
       };
       const updated = await updateRuntimeProfile(token, payload);
       setRuntimeProfile(updated);
+      const raw = await fetchRuntimeConfig(token);
+      setRuntimeConfig(raw);
+      setRuntimeDraft(raw);
       setNotice("自动参数已保存");
     } catch (err) {
       setError(err.message || "保存自动参数失败");
     } finally {
       setProfileSaving(false);
+    }
+  }
+
+  async function saveRuntimeAdvanced() {
+    if (!runtimeDraft) return;
+    setRuntimeSaving(true);
+    setNotice("");
+    try {
+      const updated = await updateRuntimeConfig(token, runtimeDraft);
+      setRuntimeConfig(updated);
+      setRuntimeDraft(updated);
+      const profile = await fetchRuntimeProfile(token);
+      setRuntimeProfile(profile);
+      setNotice("高级参数已保存");
+    } catch (err) {
+      setError(err.message || "保存高级参数失败");
+    } finally {
+      setRuntimeSaving(false);
     }
   }
 
@@ -435,7 +795,7 @@ export default function App() {
     return <LoginPanel onLogin={handleLogin} loading={authLoading} />;
   }
 
-  const summary = metrics?.summary;
+  const summary = metrics?.summary || {};
   const series = metrics?.series || {};
   const wsMeta = wsStateMeta[wsState] || wsStateMeta.disconnected;
 
@@ -471,38 +831,61 @@ export default function App() {
         </div>
         <div className="card">
           <span>账户权益</span>
-          <strong>{fmt(summary?.equity, 2)}</strong>
+          <strong>{fmt(summary.equity, 2)}</strong>
         </div>
         <div className="card">
-          <span>PnL</span>
-          <strong>{fmt(summary?.pnl, 2)}</strong>
+          <span>总PnL</span>
+          <strong>{fmt(summary.pnl_total, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>当日PnL</span>
+          <strong>{fmt(summary.pnl_daily, 2)}</strong>
         </div>
         <div className="card">
           <span>净仓名义</span>
-          <strong>{fmt(summary?.inventory_notional, 2)}</strong>
+          <strong>{fmt(summary.inventory_notional, 2)}</strong>
         </div>
         <div className="card">
           <span>动态价差(bps)</span>
-          <strong>{fmt(summary?.spread_bps, 2)}</strong>
+          <strong>{fmt(summary.spread_bps, 2)}</strong>
         </div>
         <div className="card">
           <span>实时波动(sigma)</span>
-          <strong>{fmt(summary?.sigma, 6)}</strong>
+          <strong>{fmt(summary.sigma, 6)}</strong>
+        </div>
+        <div className="card">
+          <span>运行时长</span>
+          <strong>{formatDuration(summary.run_duration_sec)}</strong>
+        </div>
+        <div className="card">
+          <span>累计交易量</span>
+          <strong>{fmt(summary.total_trade_volume_notional, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>累计成交笔数</span>
+          <strong>{fmt(summary.total_trade_count, 0)}</strong>
+        </div>
+        <div className="card">
+          <span>手续费(返佣/成本)</span>
+          <strong>
+            {fmt(summary.total_fee_rebate, 4)} / {fmt(summary.total_fee_cost, 4)}
+          </strong>
         </div>
       </section>
 
       <section className="charts-grid">
-        <LineChart title="Sigma" points={series.sigma} color="#0ea5e9" />
-        <LineChart title="Spread(bps)" points={series.spread_bps} color="#f97316" />
+        <LineChart title="Sigma" points={series.sigma} color="#22d3ee" />
+        <LineChart title="Spread(bps)" points={series.spread_bps} color="#f59e0b" />
         <LineChart title="Inventory Notional" points={series.inventory_notional} color="#22c55e" />
-        <LineChart title="Bid Distance(bps)" points={series.distance_bid_bps} color="#2563eb" />
-        <LineChart title="Ask Distance(bps)" points={series.distance_ask_bps} color="#7c3aed" />
+        <LineChart title="Pnl Total" points={series.pnl_total || []} color="#38bdf8" />
+        <LineChart title="Bid Distance(bps)" points={series.distance_bid_bps} color="#6366f1" />
+        <LineChart title="Ask Distance(bps)" points={series.distance_ask_bps} color="#f43f5e" />
       </section>
 
       <section className="panel-grid">
         <div className="panel">
-          <h2>自动参数（仅三旋钮）</h2>
-          <p className="panel-tip">系统会根据三项控制杆自动映射内部参数，并继续实时自适应。</p>
+          <h2>自动参数（默认）</h2>
+          <p className="panel-tip">默认使用三旋钮自动映射。你也可以展开高级参数手动覆盖全部运行参数。</p>
           {runtimeProfile && (
             <div className="slider-grid">
               {profileFieldMeta.map((field) => (
@@ -521,9 +904,36 @@ export default function App() {
                 <div>风险系数 γ: {fmt(runtimeProfile.runtime_preview?.base_gamma, 3)}</div>
                 <div>最小价差(bps): {fmt(runtimeProfile.runtime_preview?.min_spread_bps, 2)}</div>
                 <div>最大价差(bps): {fmt(runtimeProfile.runtime_preview?.max_spread_bps, 2)}</div>
-                <div>最大库存名义: {fmt(runtimeProfile.runtime_preview?.max_inventory_notional, 2)}</div>
+                <div>库存占比上限: {fmt(runtimeProfile.runtime_preview?.max_inventory_notional_pct, 3)}</div>
+                <div>
+                  动态库存名义估算:{" "}
+                  {fmt((summary.equity || 0) * (runtimeProfile.runtime_preview?.max_inventory_notional_pct || 0), 2)}
+                </div>
                 <div>回撤熔断(%): {fmt(runtimeProfile.runtime_preview?.drawdown_kill_pct, 2)}</div>
               </div>
+            </div>
+          )}
+
+          <div className="advanced-toggle">
+            <button onClick={() => setAdvancedOpen((s) => !s)}>
+              {advancedOpen ? "收起高级参数" : "展开高级参数（全量可调）"}
+            </button>
+          </div>
+
+          {advancedOpen && runtimeDraft && (
+            <div className="runtime-grid">
+              {runtimeFieldMeta.map((meta) => (
+                <RuntimeField
+                  key={meta.key}
+                  meta={meta}
+                  value={runtimeDraft[meta.key]}
+                  onChange={(nextValue) => setRuntimeDraft((prev) => ({ ...prev, [meta.key]: nextValue }))}
+                />
+              ))}
+              <button className="btn-primary" disabled={runtimeSaving} onClick={saveRuntimeAdvanced}>
+                {runtimeSaving ? "保存中..." : "保存高级参数"}
+              </button>
+              {runtimeConfig && <div className="panel-tip">当前配置版本已载入，可随时覆盖保存。</div>}
             </div>
           )}
         </div>
@@ -603,7 +1013,7 @@ export default function App() {
           </div>
 
           <h3 className="sub-title">Telegram 告警配置</h3>
-          <p className="panel-tip">仅支持 Bot Token 与 Chat ID，保存后密钥不会回显。</p>
+          <p className="panel-tip">支持 Bot Token 与 Chat ID，关键状态与心跳摘要由后端统一发送。</p>
           <div className="form-grid">
             <label>
               <span>TELEGRAM_BOT_TOKEN</span>
@@ -703,6 +1113,7 @@ export default function App() {
                 <th>价格</th>
                 <th>数量</th>
                 <th>手续费</th>
+                <th>类型</th>
               </tr>
             </thead>
             <tbody>
@@ -713,6 +1124,9 @@ export default function App() {
                   <td>{fmt(t.price, 4)}</td>
                   <td>{fmt(t.size, 4)}</td>
                   <td>{fmt(t.fee, 6)}</td>
+                  <td className={t.fee_side === "rebate" ? "fee-rebate" : t.fee_side === "cost" ? "fee-cost" : ""}>
+                    {t.fee_side || "-"}
+                  </td>
                 </tr>
               ))}
             </tbody>
