@@ -132,6 +132,9 @@
 - **[2026-02-19] 当前状态（风控与指标增强）**：已完成停止/熔断 taker 平仓闭环、Telegram 规范告警与心跳、库存权益联动、监控口径扩展、前端深色与高级参数面板。后端测试 `36 passed`，前端构建通过。
   - Next：实盘重点观察“平仓重试链路”和“心跳频率是否符合值守密度”，根据告警噪音再微调 `tg_heartbeat_interval_sec` 与重试退避参数。
 
+- **[2026-02-19] 当前状态（部署完成）**：代码已推送 `origin/main`（HEAD `73233ae`），并通过应急 `scp` 路径重部署到香港机 `103.52.152.92`；`grvt-mm` active、`:18081` 监听、`/healthz` 正常。
+  - Next：补齐香港机仓库的 Git 一致性（当前非 Git 工作树），恢复主干 `git pull --rebase` 部署路径。
+
 ## Known Issues
 
 - **[2026-02-19] 域名接入状态**：`as.0xpsyche.me` 已接入 `103.52.152.92`，Nginx 已配置 HTTPS 与 WebSocket 反代。
@@ -174,3 +177,7 @@
 
 - **[2026-02-19] 平仓链路观察点**：停止/熔断接口会等待 taker 平仓完成后返回；若交易所持续拒单，接口可能长时间阻塞（符合“无限重试直到成功”策略）。
   - Verify：日志检索 `POSITION_FLATTEN_RETRY` 与 `close_done` 事件；最终需出现 `POSITION_FLAT` 告警。
+
+- **[2026-02-19] 香港机部署路径异常**：`/opt/grvt-mm` 当前不是 Git 仓库，无法执行主干 `git pull --rebase`，本次采用最小文件 `scp` 应急同步。
+  - Why：远端缺失 `.git` 元数据，`git rev-parse` 返回 “not a git repository”。
+  - Verify：`cat /opt/grvt-mm/DEPLOY_COMMIT` 为 `73233ae`，`systemctl is-active grvt-mm` 为 `active`，`curl http://127.0.0.1:18081/healthz` 返回 `{"ok":true}`。
