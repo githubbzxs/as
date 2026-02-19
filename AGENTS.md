@@ -47,6 +47,24 @@
   - Why：线上出现持续 `400 code=2064 (Invalid limit price tick)`，即使下单量已达标也无法在簿。
   - Impact：`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_startup.py`
 
+- **[2026-02-19] 停止/熔断平仓策略升级**：引擎 `stop/halt` 均改为“先撤单，再 taker 立即平仓”，平仓失败按指数退避无限重试直到仓位归零。
+  - Why：避免“状态已停但持仓未清”导致尾部风险残留。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/exchange/base.py`、`backend/app/exchange/grvt_live.py`、`backend/tests/test_strategy_engine_close.py`
+
+- **[2026-02-19] 指标口径增强**：监控摘要新增运行时长、累计成交笔数、累计交易量、总/日 PnL、手续费返佣/成本拆分，成交表新增 `fee_side`。
+  - Why：解决“PnL/余额/手续费读数可解释性不足”和手续费正负号混淆。
+  - Impact：`backend/app/services/monitoring.py`、`backend/app/schemas.py`、`backend/app/api/monitor.py`、`backend/tests/test_monitoring_metrics.py`
+
+- **[2026-02-19] 库存上限权益联动**：运行时库存阈值支持 `max_inventory_notional_pct`，按 `equity * pct` 动态计算，固定名义值作为兼容兜底。
+  - Why：修复固定名义阈值与账户权益脱节的问题。
+  - Impact：`backend/app/schemas.py`、`backend/app/services/profile_mapper.py`、`backend/app/engine/strategy_engine.py`
+
+- **[2026-02-19] 告警规范化与心跳**：Telegram 告警改为标准模板（等级/事件/详情），支持关键事件必发与可配置心跳摘要。
+  - Impact：`backend/app/services/alerting.py`、`backend/app/engine/strategy_engine.py`、`backend/data/runtime_config.json`
+
+- **[2026-02-19] 前端参数面板升级**：保留三旋钮自动模式，新增“高级参数（全量可调）”折叠面板，并为每个参数展示含义与调参影响。
+  - Impact：`frontend/src/App.jsx`、`frontend/src/styles.css`
+
 ## Decisions
 
 - **[2026-02-19] 策略框架**：采用 Avellaneda-Stoikov + 基础自适应（波动率/深度/成交强度）。
@@ -81,6 +99,10 @@
   - Why：优先保证持续挂单可用性，符合“AS 模型应持续在簿报价”的产品预期。
   - Impact：`backend/app/engine/strategy_engine.py`
 
+- **[2026-02-19] 关闭路径风险优先**：停止/熔断阶段优先执行 taker 平仓闭环，不以“仅停引擎”作为完成条件。
+  - Why：在高波动场景下，仓位清理优先级高于进程快速返回。
+  - Impact：`backend/app/engine/strategy_engine.py`
+
 ## Commands
 
 - **[2026-02-19] 后端启动**：`cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload`
@@ -106,6 +128,9 @@
 
 - **[2026-02-19] 当前状态（挂单优先）**：已完成“启动即挂单”改造与前端成交诊断面板下线，新增启动与下单双测例保障行为稳定。
   - Next：在实盘观察启动后首轮挂单时间与 5-10 分钟成交节奏，若仍偏慢再评估参数窗口而非重引擎流程。
+
+- **[2026-02-19] 当前状态（风控与指标增强）**：已完成停止/熔断 taker 平仓闭环、Telegram 规范告警与心跳、库存权益联动、监控口径扩展、前端深色与高级参数面板。后端测试 `36 passed`，前端构建通过。
+  - Next：实盘重点观察“平仓重试链路”和“心跳频率是否符合值守密度”，根据告警噪音再微调 `tg_heartbeat_interval_sec` 与重试退避参数。
 
 ## Known Issues
 
@@ -146,3 +171,6 @@
 - **[2026-02-19] 运行但不挂单三级结论**：若 `code=2062` 已消失但持续 `code=2064 Invalid limit price tick`，则需对 bid/ask 价格按交易所 tick 量化后再下单。
   - Why：模型浮点价格不一定落在交易所有效刻度网格上。
   - Verify：`journalctl -u grvt-mm --no-pager | grep "code': 2064"`；修复后应不再持续出现并能查到 open orders。
+
+- **[2026-02-19] 平仓链路观察点**：停止/熔断接口会等待 taker 平仓完成后返回；若交易所持续拒单，接口可能长时间阻塞（符合“无限重试直到成功”策略）。
+  - Verify：日志检索 `POSITION_FLATTEN_RETRY` 与 `close_done` 事件；最终需出现 `POSITION_FLAT` 告警。
