@@ -12,7 +12,7 @@ from datetime import date, datetime
 from app.engine.adaptive import AdaptiveController
 from app.engine.as_model import AsMarketMakerModel
 from app.engine.risk_guard import RiskGuard, RiskInput
-from app.exchange.base import ExchangeAdapter
+from app.exchange.base import ExchangeAdapter, PositionDustError
 from app.models import EngineTick, OrderSnapshot, PositionSnapshot, QuoteDecision, utcnow
 from app.schemas import HealthStatus, RuntimeConfig
 from app.services.alerting import AlertService
@@ -230,7 +230,6 @@ class StrategyEngine:
                 size_factor = self._adaptive.quote_size_factor()
 
                 effective_capacity_notional = self._effective_capacity_notional(cfg, free_usdt)
-                inventory_usage_ratio = abs(float(position.notional)) / max(effective_capacity_notional, 1e-9)
                 max_inventory_notional_runtime = self._runtime_inventory_cap_notional(cfg, effective_capacity_notional)
                 max_inventory_base = max_inventory_notional_runtime / max(market.mid, 1e-9)
                 effective_equity_for_sizing = max(float(equity), 1.0)
@@ -311,9 +310,7 @@ class StrategyEngine:
                     pnl_daily=pnl_daily,
                     sigma=sigma,
                     sigma_zscore=sigma_z,
-                    free_usdt=free_usdt,
                     effective_capacity_notional=effective_capacity_notional,
-                    inventory_usage_ratio=inventory_usage_ratio,
                     effective_liquidity_k=effective_liquidity_k,
                     distance_bid_bps=distance_bid_bps,
                     distance_ask_bps=distance_ask_bps,
@@ -352,9 +349,7 @@ class StrategyEngine:
                             "open_order_age_buy_sec": summary.open_order_age_buy_sec,
                             "open_order_age_sell_sec": summary.open_order_age_sell_sec,
                             "max_inventory_notional_runtime": max_inventory_notional_runtime,
-                            "free_usdt": free_usdt,
                             "effective_capacity_notional": effective_capacity_notional,
-                            "inventory_usage_ratio": inventory_usage_ratio,
                             "effective_liquidity_k": effective_liquidity_k,
                             "funds_source": funds.source,
                             "inventory_side_mode": self._inventory_side_mode or "both",
@@ -479,6 +474,30 @@ class StrategyEngine:
                         "position_base": pos.base_position,
                     },
                 )
+            except PositionDustError as exc:
+                await self._event_bus.publish(
+                    "close_done",
+                    {
+                        "symbol": cfg.symbol,
+                        "trigger": trigger,
+                        "retries": retries,
+                        "remaining_base": exc.remaining_size,
+                        "dust": True,
+                        "min_close_size": exc.min_close_size,
+                    },
+                )
+                await self._alert.send_event(
+                    level="WARN",
+                    event="POSITION_FLAT_DUST",
+                    message="仓位低于最小平仓量，按残量终止平仓重试",
+                    details={
+                        "trigger": trigger,
+                        "symbol": cfg.symbol,
+                        "remaining_base": exc.remaining_size,
+                        "min_close_size": exc.min_close_size,
+                    },
+                )
+                return
             except Exception as exc:
                 retries += 1
                 self._logger.exception("taker 平仓失败(%s) attempt=%s: %s", trigger, retries, exc)

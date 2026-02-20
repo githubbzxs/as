@@ -5,6 +5,18 @@ from abc import ABC, abstractmethod
 from app.models import AccountFundsSnapshot, MarketSnapshot, OrderSnapshot, PositionSnapshot, TradeSnapshot
 
 
+class PositionDustError(RuntimeError):
+    """仓位小于交易所可成交最小量，无法继续 taker 平仓。"""
+
+    def __init__(self, symbol: str, remaining_size: float, min_close_size: float) -> None:
+        self.symbol = symbol
+        self.remaining_size = float(remaining_size)
+        self.min_close_size = float(min_close_size)
+        super().__init__(
+            f"position_dust_uncloseable symbol={symbol} remaining_size={remaining_size} min_close_size={min_close_size}"
+        )
+
+
 class ExchangeAdapter(ABC):
     """交易所抽象层。"""
 

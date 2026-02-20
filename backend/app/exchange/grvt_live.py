@@ -12,7 +12,7 @@ from pysdk.grvt_ccxt import GrvtCcxt
 from pysdk.grvt_ccxt_env import GrvtEnv
 
 from app.core.settings import Settings
-from app.exchange.base import ExchangeAdapter
+from app.exchange.base import ExchangeAdapter, PositionDustError
 from app.models import AccountFundsSnapshot, MarketSnapshot, OrderSnapshot, PositionSnapshot, TradeSnapshot
 
 
@@ -321,11 +321,14 @@ class GrvtLiveAdapter(ExchangeAdapter):
         reduce_only: bool = True,
     ) -> OrderSnapshot:
         ex_symbol = self._normalize_symbol(symbol)
-        amount = max(0.0, float(size))
+        constraints = await self._get_instrument_constraints(ex_symbol)
+        amount = self._quantize_reduce_only_size(size, constraints, ex_symbol)
         params = {
             "post_only": False,
             "reduce_only": bool(reduce_only),
+            "reduceOnly": bool(reduce_only),
             "time_in_force": "IOC",
+            "timeInForce": "IOC",
         }
         result = await asyncio.to_thread(
             self._client.create_order,
@@ -348,12 +351,20 @@ class GrvtLiveAdapter(ExchangeAdapter):
         )
 
     async def flatten_position_taker(self, symbol: str) -> None:
-        pos = await self.fetch_position(symbol)
+        ex_symbol = self._normalize_symbol(symbol)
+        constraints = await self._get_instrument_constraints(ex_symbol)
+        pos = await self.fetch_position(ex_symbol)
         size = abs(float(pos.base_position))
         if size <= 1e-12:
             return
+        if size + 1e-12 < constraints.min_size:
+            raise PositionDustError(
+                symbol=ex_symbol,
+                remaining_size=size,
+                min_close_size=constraints.min_size,
+            )
         side = "sell" if pos.base_position > 0 else "buy"
-        await self.close_position_taker(symbol=symbol, side=side, size=size, reduce_only=True)
+        await self.close_position_taker(symbol=ex_symbol, side=side, size=size, reduce_only=True)
 
     async def _get_instrument_constraints(self, symbol: str) -> InstrumentConstraints:
         ex_symbol = self._normalize_symbol(symbol)
@@ -557,6 +568,16 @@ class GrvtLiveAdapter(ExchangeAdapter):
                 f" raw_size={raw_size} size_step={constraints.size_step} min_size={constraints.min_size}"
             )
         return float(quantized)
+
+    @staticmethod
+    def _quantize_reduce_only_size(raw_size: float, constraints: InstrumentConstraints, symbol: str) -> float:
+        raw = max(0.0, float(raw_size))
+        step = max(constraints.size_step, 1e-12)
+        min_size = max(constraints.min_size, 0.0)
+        quantized = float((Decimal(str(raw)) / Decimal(str(step))).to_integral_value(rounding=ROUND_DOWN) * Decimal(str(step)))
+        if quantized <= 0 or quantized + 1e-12 < min_size:
+            raise PositionDustError(symbol=symbol, remaining_size=raw, min_close_size=min_size)
+        return quantized
 
     @staticmethod
     def _infer_decimal_step(value: float) -> float:

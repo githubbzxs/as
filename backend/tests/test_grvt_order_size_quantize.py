@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.core.settings import Settings
+from app.exchange.base import PositionDustError
 from app.exchange.grvt_live import GrvtLiveAdapter, InstrumentConstraintsError
 
 
@@ -23,6 +24,8 @@ class _ClientWithInstrument:
         self._size_step = size_step
         self._market_overrides = market_overrides or {}
         self.last_amount: float | None = None
+        self.last_order_type: str | None = None
+        self.last_params: dict | None = None
 
     def fetch_market(self, symbol: str) -> dict:
         payload = {
@@ -49,6 +52,8 @@ class _ClientWithInstrument:
         params: dict,
     ) -> dict:
         self.last_amount = float(amount)
+        self.last_order_type = order_type
+        self.last_params = params
         return {"order_id": "oid-1", "symbol": symbol, "type": order_type, "side": side, "price": price, "params": params}
 
 
@@ -204,6 +209,47 @@ def test_place_limit_order_blocks_when_constraints_missing():
                 size=10.0,
                 post_only=True,
                 client_order_id="cid-missing-1",
+            )
+        )
+
+    assert fake_client.last_amount is None
+
+
+def test_close_position_taker_quantizes_reduce_only_size():
+    adapter = GrvtLiveAdapter(Settings())
+    fake_client = _ClientWithInstrument(min_size=0.5, base_decimals=9, size_step=0.5)
+    adapter.__dict__["_client"] = fake_client
+
+    order = asyncio.run(
+        adapter.close_position_taker(
+            symbol="SUI_USDT_Perp",
+            side="sell",
+            size=2.37,
+            reduce_only=True,
+        )
+    )
+
+    assert fake_client.last_amount is not None
+    assert abs(fake_client.last_amount - 2.0) < 1e-12
+    assert fake_client.last_order_type == "market"
+    assert fake_client.last_params is not None
+    assert fake_client.last_params["reduce_only"] is True
+    assert fake_client.last_params["reduceOnly"] is True
+    assert order.size == 2.0
+
+
+def test_close_position_taker_raises_dust_when_position_below_min_size():
+    adapter = GrvtLiveAdapter(Settings())
+    fake_client = _ClientWithInstrument(min_size=1.0, base_decimals=9, size_step=1.0)
+    adapter.__dict__["_client"] = fake_client
+
+    with pytest.raises(PositionDustError):
+        asyncio.run(
+            adapter.close_position_taker(
+                symbol="XRP_USDT_Perp",
+                side="sell",
+                size=0.6,
+                reduce_only=True,
             )
         )
 

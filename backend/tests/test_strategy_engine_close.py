@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, Mock
 
 from app.engine.strategy_engine import StrategyEngine
+from app.exchange.base import PositionDustError
 from app.models import PositionSnapshot
 from app.schemas import RuntimeConfig
 
@@ -86,3 +87,26 @@ def test_stop_retries_when_flatten_failed():
     asyncio.run(engine.stop("manual"))
 
     assert adapter.flatten_position_taker.await_count == 2
+
+
+def test_stop_finishes_when_position_is_dust():
+    cfg = RuntimeConfig(close_retry_base_delay_sec=0.05, close_retry_max_delay_sec=0.1)
+    engine, adapter, event_bus = _build_engine(cfg)
+
+    adapter.fetch_position = AsyncMock(return_value=PositionSnapshot(symbol=cfg.symbol, base_position=0.4, notional=2.0))
+    adapter.flatten_position_taker = AsyncMock(side_effect=PositionDustError(cfg.symbol, 0.4, 1.0))
+
+    asyncio.run(engine.stop("manual"))
+
+    adapter.flatten_position_taker.assert_awaited_once_with(cfg.symbol)
+    event_bus.publish.assert_any_await(
+        "close_done",
+        {
+            "symbol": cfg.symbol,
+            "trigger": "stop",
+            "retries": 0,
+            "remaining_base": 0.4,
+            "dust": True,
+            "min_close_size": 1.0,
+        },
+    )
