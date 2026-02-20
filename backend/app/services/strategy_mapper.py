@@ -7,6 +7,17 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+AGGRESSIVE_EXECUTION_PRESET: dict[str, float] = {
+    "min_spread_bps": 0.25,
+    "max_spread_bps": 1.8,
+    "requote_threshold_bps": 0.10,
+    "requote_size_threshold_ratio": 0.08,
+    "order_ttl_sec": 20.0,
+    "quote_interval_sec": 0.25,
+    "min_order_age_before_requote_sec": 0.25,
+}
+
+
 def strategy_to_runtime_config(strategy: StrategyConfig, current: RuntimeConfig) -> RuntimeConfig:
     recover_ratio = _clamp(strategy.max_inventory_equity_ratio * 0.75, 0.0, strategy.max_inventory_equity_ratio)
     merged = current.model_dump()
@@ -20,6 +31,13 @@ def strategy_to_runtime_config(strategy: StrategyConfig, current: RuntimeConfig)
             "max_inventory_equity_ratio": strategy.max_inventory_equity_ratio,
             "single_side_recover_ratio": recover_ratio,
             "max_inventory_notional_pct": strategy.max_inventory_equity_ratio,
+            "min_spread_bps": AGGRESSIVE_EXECUTION_PRESET["min_spread_bps"],
+            "max_spread_bps": AGGRESSIVE_EXECUTION_PRESET["max_spread_bps"],
+            "requote_threshold_bps": AGGRESSIVE_EXECUTION_PRESET["requote_threshold_bps"],
+            "requote_size_threshold_ratio": AGGRESSIVE_EXECUTION_PRESET["requote_size_threshold_ratio"],
+            "order_ttl_sec": int(AGGRESSIVE_EXECUTION_PRESET["order_ttl_sec"]),
+            "quote_interval_sec": AGGRESSIVE_EXECUTION_PRESET["quote_interval_sec"],
+            "min_order_age_before_requote_sec": AGGRESSIVE_EXECUTION_PRESET["min_order_age_before_requote_sec"],
         }
     )
     return RuntimeConfig.model_validate(merged)

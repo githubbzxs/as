@@ -55,14 +55,14 @@ class RuntimeConfig(BaseModel):
     single_side_recover_ratio: float = Field(default=0.45, ge=0.0, le=2.0)
     max_single_order_notional: float = Field(default=420.0, ge=1)
 
-    min_spread_bps: float = Field(default=0.8, ge=0.1)
-    max_spread_bps: float = Field(default=6.0, ge=1)
+    min_spread_bps: float = Field(default=0.25, ge=0.1)
+    max_spread_bps: float = Field(default=1.8, ge=1)
 
-    requote_threshold_bps: float = Field(default=0.3, ge=0.1)
-    requote_size_threshold_ratio: float = Field(default=0.15, ge=0.0, le=1.0)
-    order_ttl_sec: int = Field(default=45, ge=1, le=300)
-    quote_interval_sec: float = Field(default=0.45, ge=0.2, le=10)
-    min_order_age_before_requote_sec: float = Field(default=1.0, ge=0.0, le=60.0)
+    requote_threshold_bps: float = Field(default=0.10, ge=0.1)
+    requote_size_threshold_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
+    order_ttl_sec: int = Field(default=20, ge=1, le=300)
+    quote_interval_sec: float = Field(default=0.25, ge=0.2, le=10)
+    min_order_age_before_requote_sec: float = Field(default=0.25, ge=0.0, le=60.0)
     min_order_size_base: float = Field(default=0.01, ge=0.000001)
 
     sigma_window_sec: int = Field(default=60, ge=10, le=600)
@@ -241,9 +241,7 @@ class MetricsSummary(BaseModel):
     inventory_base: float
     inventory_notional: float
     equity: float
-    free_usdt: float = 0.0
     effective_capacity_notional: float = 0.0
-    inventory_usage_ratio: float = 0.0
     pnl: float
     pnl_total: float = 0.0
     pnl_daily: float = 0.0

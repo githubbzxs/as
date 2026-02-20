@@ -21,6 +21,12 @@ def test_strategy_to_runtime_mapping():
     assert mapped.drawdown_kill_pct == 7.5
     assert mapped.max_inventory_equity_ratio == 0.55
     assert mapped.single_side_recover_ratio < mapped.max_inventory_equity_ratio
+    assert mapped.min_spread_bps == 0.25
+    assert mapped.max_spread_bps == 1.8
+    assert mapped.requote_threshold_bps == 0.1
+    assert mapped.requote_size_threshold_ratio == 0.08
+    assert mapped.quote_interval_sec == 0.25
+    assert mapped.min_order_age_before_requote_sec == 0.25
 
 
 def test_runtime_to_strategy_mapping():

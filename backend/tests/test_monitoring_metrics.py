@@ -53,6 +53,7 @@ def test_monitoring_accumulates_trade_volume_and_fee_split():
     monitor.update_trades(trades)
     monitor.update_tick(_build_tick(now, pnl_total=25.0, pnl_daily=12.0), drawdown_pct=1.0, mode="running", consecutive_failures=0)
     summary = monitor.summary
+    summary_payload = summary.model_dump()
 
     assert summary.run_duration_sec >= 120
     assert summary.total_trade_count == 2
@@ -71,6 +72,8 @@ def test_monitoring_accumulates_trade_volume_and_fee_split():
     assert abs(summary.target_completion_ratio_session - expected_ratio) < 1e-9
     expected_wear = -summary.pnl_total / summary.total_trade_volume_notional * 10000.0
     assert abs(summary.wear_per_10k - expected_wear) < 1e-9
+    assert "free_usdt" not in summary_payload
+    assert "inventory_usage_ratio" not in summary_payload
 
 
 def test_monitoring_dedup_trade_by_trade_id():

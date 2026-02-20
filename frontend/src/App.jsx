@@ -497,20 +497,12 @@ export default function App() {
           <strong>{fmt(summary.equity, 2)}</strong>
         </div>
         <div className="card">
-          <span>可用资金(USDT)</span>
-          <strong>{fmt(summary.free_usdt, 2)}</strong>
-        </div>
-        <div className="card">
           <span>总PnL</span>
           <strong>{fmt(summary.pnl_total, 2)}</strong>
         </div>
         <div className="card">
           <span>净仓名义</span>
           <strong>{fmt(summary.inventory_notional, 2)}</strong>
-        </div>
-        <div className="card">
-          <span>库存占用比(可用×杠杆)</span>
-          <strong>{fmt((summary.inventory_usage_ratio || 0) * 100, 2)}%</strong>
         </div>
         <div className="card">
           <span>运行时长</span>
@@ -594,7 +586,7 @@ export default function App() {
               />
             </label>
             <label>
-              <span>最大库存占比(权益比)</span>
+              <span>最大库存占比(可用资金×杠杆)</span>
               <input
                 type="number"
                 step="0.01"
