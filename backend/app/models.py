@@ -24,6 +24,14 @@ class PositionSnapshot:
 
 
 @dataclass(slots=True)
+class AccountFundsSnapshot:
+    equity_usdt: float
+    free_usdt: float
+    used_usdt: float
+    source: str = "unknown"
+
+
+@dataclass(slots=True)
 class OrderSnapshot:
     order_id: str
     side: Literal["buy", "sell"]
@@ -41,6 +49,7 @@ class TradeSnapshot:
     size: float
     fee: float
     created_at: datetime
+    symbol: str | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +75,10 @@ class EngineTick:
     pnl_daily: float
     sigma: float
     sigma_zscore: float
+    free_usdt: float = 0.0
+    effective_capacity_notional: float = 0.0
+    inventory_usage_ratio: float = 0.0
+    effective_liquidity_k: float = 0.0
     distance_bid_bps: float = 0.0
     distance_ask_bps: float = 0.0
 

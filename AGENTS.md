@@ -22,6 +22,26 @@
 
 ## Facts
 
+- **[2026-02-20] 库存占比口径切换为可用资金杠杆口径**：单边触发与库存上限运行时口径已改为 `free_usdt * effective_leverage`，不再直接使用 `equity` 作为分母。
+  - Why：修复小本金高杠杆场景（如 8u*50x）下“权益占比”与实际可开仓能力脱节的问题。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/exchange/grvt_live.py`、`backend/app/models.py`、`backend/app/schemas.py`
+
+- **[2026-02-20] 账户资金快照接口新增**：交易所适配层新增 `fetch_account_funds`，统一返回 `equity/free/used/source`，并保留 `fetch_equity` 兼容路径。
+  - Impact：`backend/app/exchange/base.py`、`backend/app/exchange/grvt_live.py`、`backend/tests/test_grvt_funds_snapshot.py`
+
+- **[2026-02-20] 监控新增可用资金口径指标**：摘要与诊断新增 `free_usdt`、`effective_capacity_notional`、`inventory_usage_ratio`、`effective_liquidity_k`。
+  - Impact：`backend/app/services/monitoring.py`、`backend/app/schemas.py`、`frontend/src/App.jsx`
+
+- **[2026-02-20] 参数入口切换**：前后端新增 `StrategyConfig`（`/api/config/strategy`），WebUI 已从“目标交易量模式”切换为“交易对 + AS 三参数(gamma/sigma/k) + 两项风控（最大回撤/最大库存占比）”。
+  - Impact：`backend/app/schemas.py`、`backend/app/api/config.py`、`backend/app/services/runtime_config.py`、`backend/app/services/strategy_mapper.py`、`frontend/src/App.jsx`
+
+- **[2026-02-20] 重挂防抖落地**：新增 `min_order_age_before_requote_sec`（默认 `1.0s`）与 side 级别局部换单，替代“全撤全挂”。
+  - Why：修复“0.x 秒频繁撤挂导致难成交”的问题，同时尽量保持双边在簿连续性。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/schemas.py`
+
+- **[2026-02-20] 单边触发口径变更**：单边挂单由“库存名义倍数阈值”改为“`abs(inventory_notional)/equity` 阈值”，并加入滞回回切（恢复阈值）。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/schemas.py`
+
 - **[2026-02-19] 项目目标**：交付 GRVT 做市实盘首版，范围仅下单、监控、API Key 配置，不含回测模块。
   - Impact：`backend/`、`frontend/`
 
@@ -127,7 +147,31 @@
   - Why：减少“一成交就单边挂单”的误触发。
   - Impact：`backend/app/services/goal_mapper.py`、`backend/app/engine/strategy_engine.py`、`backend/tests/test_strategy_engine_startup.py`
 
+- **[2026-02-20] 下单量步长量化修复**：GRVT 适配器新增交易对元数据约束缓存（`min_size/base_decimals/size_step`），下单前统一对 `size` 按步长量化并执行最小下单量抬升。
+  - Why：修复线上持续 `400 code=2065 (Order size too granular)` 导致运行中无在簿挂单。
+  - Impact：`backend/app/exchange/grvt_live.py`、`backend/tests/test_grvt_order_size_quantize.py`
+
+- **[2026-02-20] 本次成交量口径修复**：监控累计指标仅统计 `created_at >= session_started_at` 的成交，避免把启动前历史成交混入“本次策略成交量”。
+  - Why：修复“本次策略成交量”展示偏大/偏错的问题。
+  - Impact：`backend/app/services/monitoring.py`、`backend/tests/test_monitoring_metrics.py`、`backend/app/models.py`
+
 ## Decisions
+
+- **[2026-02-20] 库存风险分母决策**：库存占比分母采用 `free_usdt * effective_leverage`（默认 50x），并在 `free` 缺失时回退到 `equity-used` 估算。
+  - Why：最贴近“实际可用可开名义”口径，解决小本金高杠杆误判。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/exchange/grvt_live.py`
+
+- **[2026-02-20] k 自适应决策**：`k` 采用盘口深度单因子自适应（`base_k * depth_factor`，区间限幅 `[0.5x, 2.0x]`），`gamma` 继续沿用随 `sigma` 自适应。
+  - Why：在不引入过多参数复杂度下，增强深度差场景的价差与成交质量平衡。
+  - Impact：`backend/app/engine/strategy_engine.py`
+
+- **[2026-02-20] 配置策略决策**：主配置入口从 Goal 模型迁移到 Strategy 模型；`/api/config/goal` 保留为兼容接口但不再作为前端主路径。
+  - Why：满足“回归 AS 核心参数、移除目标交易量驱动”的产品要求，降低参数语义偏差。
+  - Impact：`backend/app/api/config.py`、`frontend/src/api.js`
+
+- **[2026-02-20] 成交优先执行决策**：重挂改为“先挂新单再撤旧单”的 side 级更新策略。
+  - Why：减少重挂过程的空档时间，优先保证持续在簿。
+  - Impact：`backend/app/engine/strategy_engine.py`
 
 - **[2026-02-19] 策略框架**：采用 Avellaneda-Stoikov + 基础自适应（波动率/深度/成交强度）。
   - Why：满足“参数自动适应实时波动”且实现可控。
@@ -194,6 +238,12 @@
 
 ## Status / Next
 
+- **[2026-02-20] 当前状态（可用资金口径 + k 自适应）**：已完成可用资金杠杆口径接入、`k` 深度自适应、监控字段与前端卡片展示、资金解析回归测试；后端测试 `64 passed`，前端构建通过。
+  - Next：部署后观察 10-20 分钟 `inventory_usage_ratio` 与 `effective_liquidity_k` 曲线，确认单边触发与可用资金变化一致。
+
+- **[2026-02-20] 当前状态（AS 参数回归）**：`strategy` 配置链路、重挂防抖、库存权益比单边阈值、前端策略面板已落地；后端测试 `58 passed`，前端构建通过。
+  - Next：部署后观察 10-20 分钟 `open_orders` 连续性与 `requote_reason` 分布，重点确认不再出现高频抖动撤挂。
+
 - **[2026-02-19] 当前状态**：默认实盘（prod）与去 mock、Telegram 配置、WS 重连状态已落地，后端测试 `20 passed`，前端构建通过，并已部署到香港机。
   - Next：在真实账户观察 Telegram 告警送达与实盘风控触发行为，按成交节奏微调参数。
 
@@ -237,7 +287,18 @@
 - **[2026-02-19] 当前状态（口径修复）**：已完成“去当日PnL/去达成率/单成交量展示”、50x 映射与单边阈值修复，新增回归测试；后端测试 `51 passed`，前端构建通过。
   - Next：实盘观察 15-30 分钟，重点确认“改单量后实际挂单量变化”与“成交后是否仍稳定双边挂单（未超 1.5x 库存阈值）”。
 
+- **[2026-02-20] 当前状态（挂单恢复+成交量口径）**：已完成 `2065` 下单粒度修复与“本次策略成交量”会话口径修复，新增量化与口径回归用例；后端测试 `55 passed`。
+  - Next：重部署伦敦机后观察 10-20 分钟，确认日志不再出现 `code=2065` 且 `open_orders` 可稳定在簿；同时核对策略重启后成交量从 0 开始累计。
+
 ## Known Issues
+
+- **[2026-02-20] 可用资金字段来源差异**：不同账户/交易所响应下 `free_usdt` 可能来自 `USDT.free`、`free.USDT` 或 `equity-used` 回退。
+  - Why：交易所返回字段存在不一致，已通过 `funds_source` 诊断字段标记来源。
+  - Verify：观察 `tick.diagnostics.funds_source` 是否稳定且与账户面板一致。
+
+- **[2026-02-20] 兼容接口残留**：`/api/config/goal` 仍可用，但已不再是主配置入口（前端已切换为 `/api/config/strategy`）。
+  - Why：为历史脚本/调用方提供过渡兼容。
+  - Verify：`GET/PUT /api/config/strategy` 返回成功且前端“策略配置（AS 核心）”面板可正常读写。
 
 - **[2026-02-19] 域名接入状态**：`as.0xpsyche.me` 已接入 `103.52.152.92`，Nginx 已配置 HTTPS 与 WebSocket 反代。
   - Verify：`curl -I http://as.0xpsyche.me` 应 301 到 HTTPS，`curl -I https://as.0xpsyche.me` 返回 405/200 视请求方法而定，`wss://as.0xpsyche.me/ws/stream` 可收到 `hello`。
@@ -276,6 +337,10 @@
 - **[2026-02-19] 运行但不挂单三级结论**：若 `code=2062` 已消失但持续 `code=2064 Invalid limit price tick`，则需对 bid/ask 价格按交易所 tick 量化后再下单。
   - Why：模型浮点价格不一定落在交易所有效刻度网格上。
   - Verify：`journalctl -u grvt-mm --no-pager | grep "code': 2064"`；修复后应不再持续出现并能查到 open orders。
+
+- **[2026-02-20] 运行但不挂单四级结论**：若 `code=2062/2064` 已处理但持续 `code=2065 Order size too granular`，则需按交易对步长量化下单数量，而非仅做最小下单量保护。
+  - Why：交易所会对 `size` 精度做粒度校验，超出允许步长会整单拒绝。
+  - Verify：`journalctl -u grvt-mm --no-pager | grep "code': 2065"`；修复后错误应消失且 `open_orders` 返回非空。
 
 - **[2026-02-19] 平仓链路观察点**：停止/熔断接口会等待 taker 平仓完成后返回；若交易所持续拒单，接口可能长时间阻塞（符合“无限重试直到成功”策略）。
   - Verify：日志检索 `POSITION_FLATTEN_RETRY` 与 `close_done` 事件；最终需出现 `POSITION_FLAT` 告警。

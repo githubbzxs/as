@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -31,8 +31,6 @@ class SyncResult:
 class StrategyEngine:
     """做市主引擎。"""
 
-    _SIZING_LEVERAGE_MULTIPLIER = 50.0
-    _INVENTORY_ONE_SIDE_TRIGGER_MULTIPLIER = 1.5
     _MIN_NOTIONAL_BUFFER_RATIO = 1.05
 
     def __init__(
@@ -69,9 +67,7 @@ class StrategyEngine:
         self._equity_day: date | None = None
         self._engine_started_at: datetime | None = None
         self._last_heartbeat_at: datetime | None = None
-        self._last_volume_tune_at: datetime | None = None
-        self._spread_tune_factor: float = 1.0
-        self._interval_tune_factor: float = 1.0
+        self._inventory_side_mode: str | None = None
         self._consecutive_failures: int = 0
         self._last_status_at: datetime = utcnow()
 
@@ -90,9 +86,7 @@ class StrategyEngine:
         self._equity_day = None
         self._engine_started_at = utcnow()
         self._last_heartbeat_at = None
-        self._last_volume_tune_at = None
-        self._spread_tune_factor = 1.0
-        self._interval_tune_factor = 1.0
+        self._inventory_side_mode = None
         self._risk.reset_peak(0.0)
         self._monitor.reset_session(started_at=self._engine_started_at)
 
@@ -205,15 +199,9 @@ class StrategyEngine:
         while not self._stop_event.is_set():
             tick_started = utcnow()
             cfg = self._config_store.get()
-            goal_cfg = self._config_store.get_goal()
-            self._monitor.set_target_hourly_notional(goal_cfg.target_hourly_notional)
-            self._maybe_adjust_volume_tuning(
-                target_hourly_notional=goal_cfg.target_hourly_notional,
-                actual_hourly_notional=self._monitor.summary.trade_volume_notional_1h,
-                now=tick_started,
-            )
             effective_quote_interval = self._effective_quote_interval(cfg.quote_interval_sec)
             self._adaptive.set_windows(cfg.sigma_window_sec, effective_quote_interval)
+            self._adaptive.set_sigma_baseline(cfg.as_sigma)
 
             try:
                 loop_started_monotonic = time.perf_counter()
@@ -223,11 +211,13 @@ class StrategyEngine:
                 fetch_market_ms = (time.perf_counter() - fetch_market_started) * 1000.0
 
                 fetch_account_started = time.perf_counter()
-                equity, position = await asyncio.gather(
-                    self._adapter.fetch_equity(),
+                funds, position = await asyncio.gather(
+                    self._adapter.fetch_account_funds(),
                     self._adapter.fetch_position(cfg.symbol),
                 )
                 fetch_account_ms = (time.perf_counter() - fetch_account_started) * 1000.0
+                equity = float(funds.equity_usdt)
+                free_usdt = float(funds.free_usdt)
 
                 if self._initial_equity is None:
                     self._initial_equity = equity
@@ -239,12 +229,11 @@ class StrategyEngine:
                 intensity_factor = self._adaptive.intensity_factor()
                 size_factor = self._adaptive.quote_size_factor()
 
-                max_inventory_notional_runtime = self._runtime_inventory_cap_notional(cfg, equity)
+                effective_capacity_notional = self._effective_capacity_notional(cfg, free_usdt)
+                inventory_usage_ratio = abs(float(position.notional)) / max(effective_capacity_notional, 1e-9)
+                max_inventory_notional_runtime = self._runtime_inventory_cap_notional(cfg, effective_capacity_notional)
                 max_inventory_base = max_inventory_notional_runtime / max(market.mid, 1e-9)
-                effective_equity_for_sizing = max(
-                    float(equity),
-                    float(goal_cfg.principal_usdt) * self._SIZING_LEVERAGE_MULTIPLIER,
-                )
+                effective_equity_for_sizing = max(float(equity), 1.0)
                 min_notional = max(
                     1e-6,
                     market.mid * cfg.min_order_size_base * self._MIN_NOTIONAL_BUFFER_RATIO,
@@ -255,6 +244,7 @@ class StrategyEngine:
                     risk_notional,
                 )
                 quote_notional = max(min_notional, base_quote_notional * size_factor)
+                effective_liquidity_k = self._effective_liquidity_k(cfg.liquidity_k, depth_factor)
 
                 decision = self._as_model.compute_quote(
                     mid_price=market.mid,
@@ -264,7 +254,7 @@ class StrategyEngine:
                     base_gamma=cfg.base_gamma,
                     gamma_min=cfg.gamma_min,
                     gamma_max=cfg.gamma_max,
-                    liquidity_k=cfg.liquidity_k,
+                    liquidity_k=effective_liquidity_k,
                     horizon_sec=cfg.order_ttl_sec,
                     min_spread_bps=self._effective_min_spread_bps(
                         cfg.min_spread_bps,
@@ -284,10 +274,10 @@ class StrategyEngine:
                 if self._mode == "running":
                     sync_started = time.perf_counter()
                     sync_result = await self._sync_orders(
-                        cfg,
-                        position,
-                        decision,
-                        max_inventory_notional=max_inventory_notional_runtime,
+                        cfg=cfg,
+                        effective_capacity_notional=effective_capacity_notional,
+                        position=position,
+                        decision=decision,
                     )
                     sync_orders_ms = (time.perf_counter() - sync_started) * 1000.0
                     if sync_result.requoted:
@@ -321,6 +311,10 @@ class StrategyEngine:
                     pnl_daily=pnl_daily,
                     sigma=sigma,
                     sigma_zscore=sigma_z,
+                    free_usdt=free_usdt,
+                    effective_capacity_notional=effective_capacity_notional,
+                    inventory_usage_ratio=inventory_usage_ratio,
+                    effective_liquidity_k=effective_liquidity_k,
                     distance_bid_bps=distance_bid_bps,
                     distance_ask_bps=distance_ask_bps,
                 )
@@ -358,9 +352,12 @@ class StrategyEngine:
                             "open_order_age_buy_sec": summary.open_order_age_buy_sec,
                             "open_order_age_sell_sec": summary.open_order_age_sell_sec,
                             "max_inventory_notional_runtime": max_inventory_notional_runtime,
-                            "spread_tune_factor": self._spread_tune_factor,
-                            "interval_tune_factor": self._interval_tune_factor,
-                            "target_hourly_notional": goal_cfg.target_hourly_notional,
+                            "free_usdt": free_usdt,
+                            "effective_capacity_notional": effective_capacity_notional,
+                            "inventory_usage_ratio": inventory_usage_ratio,
+                            "effective_liquidity_k": effective_liquidity_k,
+                            "funds_source": funds.source,
+                            "inventory_side_mode": self._inventory_side_mode or "both",
                             "loop_elapsed_ms": round(loop_elapsed_ms, 3),
                             "fetch_market_ms": round(fetch_market_ms, 3),
                             "fetch_account_ms": round(fetch_account_ms, 3),
@@ -397,7 +394,7 @@ class StrategyEngine:
                 self._last_error = f"[{category}] {exc}"
                 self._last_status_at = utcnow()
                 self._exchange_connected = False
-                self._logger.exception("主循环异常(%s): %s", category, exc)
+                self._logger.exception("涓诲惊鐜紓甯?%s): %s", category, exc)
                 await self._event_bus.publish(
                     "error",
                     {
@@ -431,44 +428,16 @@ class StrategyEngine:
         effective = min_spread_bps * depth_factor * intensity_factor
         return max(0.1, min(effective, max(max_spread_bps - 0.05, 0.1)))
 
-    def _effective_quote_interval(self, base_interval: float) -> float:
-        interval = base_interval * self._interval_tune_factor
-        return max(0.2, min(interval, 10.0))
+    @staticmethod
+    def _effective_quote_interval(base_interval: float) -> float:
+        return max(0.2, min(base_interval, 10.0))
 
-    def _maybe_adjust_volume_tuning(
-        self,
-        *,
-        target_hourly_notional: float,
-        actual_hourly_notional: float,
-        now: datetime,
-    ) -> None:
-        if target_hourly_notional <= 0:
-            return
-        if self._last_volume_tune_at is not None:
-            if (now - self._last_volume_tune_at).total_seconds() < 60.0:
-                return
-
-        ratio = actual_hourly_notional / target_hourly_notional
-        if ratio < 0.7:
-            self._spread_tune_factor *= 0.9
-            self._interval_tune_factor *= 0.9
-        elif ratio > 1.3:
-            self._spread_tune_factor *= 1.1
-            self._interval_tune_factor *= 1.1
-        else:
-            # 回到目标区间后缓慢回归基础参数，防止高频抖动。
-            self._spread_tune_factor += (1.0 - self._spread_tune_factor) * 0.3
-            self._interval_tune_factor += (1.0 - self._interval_tune_factor) * 0.3
-
-        self._spread_tune_factor = max(0.5, min(2.0, self._spread_tune_factor))
-        self._interval_tune_factor = max(0.5, min(2.0, self._interval_tune_factor))
-        self._last_volume_tune_at = now
 
     async def _cancel_all_orders_safe(self, symbol: str, stage: str) -> None:
         try:
             await self._adapter.cancel_all_orders(symbol)
         except Exception as exc:
-            self._logger.warning("%s 时撤单失败: %s", stage, exc)
+            self._logger.warning("%s 鏃舵挙鍗曞け璐? %s", stage, exc)
 
     async def _flatten_position_until_done(self, cfg: RuntimeConfig, trigger: str) -> None:
         retries = 0
@@ -572,10 +541,21 @@ class StrategyEngine:
             self._day_start_equity = equity
 
     @staticmethod
-    def _runtime_inventory_cap_notional(cfg: RuntimeConfig, equity: float) -> float:
+    def _runtime_inventory_cap_notional(cfg: RuntimeConfig, effective_capacity_notional: float) -> float:
         if cfg.max_inventory_notional_pct > 0:
-            return max(0.0, equity * cfg.max_inventory_notional_pct)
+            return max(0.0, effective_capacity_notional * cfg.max_inventory_notional_pct)
         return max(0.0, cfg.max_inventory_notional)
+
+    @staticmethod
+    def _effective_capacity_notional(cfg: RuntimeConfig, free_usdt: float) -> float:
+        leverage = max(1.0, float(cfg.effective_leverage))
+        return max(1e-6, max(0.0, float(free_usdt)) * leverage)
+
+    @staticmethod
+    def _effective_liquidity_k(base_k: float, depth_factor: float) -> float:
+        baseline = max(1e-6, float(base_k))
+        scaled = baseline * max(0.1, float(depth_factor))
+        return max(baseline * 0.5, min(baseline * 2.0, scaled))
 
     def _post_only_guard(self, bid: float, ask: float, decision: QuoteDecision, price_tick: float) -> None:
         min_tick = max(0.0001, price_tick)
@@ -590,77 +570,170 @@ class StrategyEngine:
 
     async def _sync_orders(
         self,
+        *,
         cfg: RuntimeConfig,
+        effective_capacity_notional: float,
         position: PositionSnapshot,
         decision: QuoteDecision,
-        *,
-        max_inventory_notional: float,
     ) -> SyncResult:
         orders = await self._adapter.fetch_open_orders(cfg.symbol)
-        buy_order = next((o for o in orders if o.side == "buy"), None)
-        sell_order = next((o for o in orders if o.side == "sell"), None)
+        now = utcnow()
+        buy_order = self._latest_order_by_side(orders, "buy")
+        sell_order = self._latest_order_by_side(orders, "sell")
 
-        one_side_trigger_notional = max_inventory_notional * self._INVENTORY_ONE_SIDE_TRIGGER_MULTIPLIER
-        only_sell = position.notional > one_side_trigger_notional
-        only_buy = position.notional < -one_side_trigger_notional
+        only_buy, only_sell = self._resolve_inventory_side_mode(
+            cfg,
+            position.notional,
+            effective_capacity_notional,
+        )
+        desired_sides: set[str] = {"buy", "sell"}
+        if only_buy:
+            desired_sides = {"buy"}
+        elif only_sell:
+            desired_sides = {"sell"}
 
-        buy_dev = bool(
-            buy_order and self._price_deviation_bps(buy_order.price, decision.bid_price) > cfg.requote_threshold_bps
-        )
-        sell_dev = bool(
-            sell_order and self._price_deviation_bps(sell_order.price, decision.ask_price) > cfg.requote_threshold_bps
-        )
-        buy_size_dev = bool(
-            buy_order
-            and self._size_deviation_ratio(buy_order.size, decision.quote_size_base) > cfg.requote_size_threshold_ratio
-        )
-        sell_size_dev = bool(
-            sell_order
-            and self._size_deviation_ratio(sell_order.size, decision.quote_size_base) > cfg.requote_size_threshold_ratio
-        )
-        ttl_expired = any((utcnow() - o.created_at).total_seconds() > cfg.order_ttl_sec for o in orders)
+        reasons: list[str] = []
+        requoted = False
 
-        reasons = self._collect_requote_reasons(
-            buy_order=buy_order,
-            sell_order=sell_order,
-            only_sell=only_sell,
-            only_buy=only_buy,
-            buy_dev=buy_dev,
-            sell_dev=sell_dev,
-            buy_size_dev=buy_size_dev,
-            sell_size_dev=sell_size_dev,
-            ttl_expired=ttl_expired,
-        )
-        if not reasons:
+        if only_buy or only_sell:
+            reasons.append("inventory-limit")
+
+        if buy_order and "buy" not in desired_sides:
+            await self._cancel_order_silent(cfg.symbol, buy_order.order_id)
+            buy_order = None
+            reasons.append("inventory-exit-buy")
+            requoted = True
+        if sell_order and "sell" not in desired_sides:
+            await self._cancel_order_silent(cfg.symbol, sell_order.order_id)
+            sell_order = None
+            reasons.append("inventory-exit-sell")
+            requoted = True
+
+        if "buy" in desired_sides:
+            side_reasons, side_changed = await self._ensure_side_order(
+                cfg=cfg,
+                side="buy",
+                now=now,
+                existing=buy_order,
+                target_price=decision.bid_price,
+                target_size=decision.quote_size_base,
+            )
+            reasons.extend(side_reasons)
+            requoted = requoted or side_changed
+        if "sell" in desired_sides:
+            side_reasons, side_changed = await self._ensure_side_order(
+                cfg=cfg,
+                side="sell",
+                now=now,
+                existing=sell_order,
+                target_price=decision.ask_price,
+                target_size=decision.quote_size_base,
+            )
+            reasons.extend(side_reasons)
+            requoted = requoted or side_changed
+
+        if not requoted:
             return SyncResult(requoted=False, reason="none", open_orders=orders)
 
-        await self._adapter.cancel_all_orders(cfg.symbol)
-
         try:
-            if not only_sell:
-                await self._adapter.place_limit_order(
-                    symbol=cfg.symbol,
-                    side="buy",
-                    price=decision.bid_price,
-                    size=decision.quote_size_base,
-                    post_only=True,
-                    client_order_id=self._new_client_order_id("buy"),
-                )
-            if not only_buy:
-                await self._adapter.place_limit_order(
-                    symbol=cfg.symbol,
-                    side="sell",
-                    price=decision.ask_price,
-                    size=decision.quote_size_base,
-                    post_only=True,
-                    client_order_id=self._new_client_order_id("sell"),
-                )
             self._consecutive_failures = 0
             refreshed_orders = await self._adapter.fetch_open_orders(cfg.symbol)
-            return SyncResult(requoted=True, reason=",".join(reasons), open_orders=refreshed_orders)
+            reason_text = ",".join(dict.fromkeys(reasons)) if reasons else "none"
+            return SyncResult(requoted=True, reason=reason_text, open_orders=refreshed_orders)
         except Exception:
             self._consecutive_failures += 1
             raise
+
+    def _resolve_inventory_side_mode(
+        self,
+        cfg: RuntimeConfig,
+        inventory_notional: float,
+        effective_capacity_notional: float,
+    ) -> tuple[bool, bool]:
+        safe_capacity = max(abs(float(effective_capacity_notional)), 1e-9)
+        usage_ratio = abs(float(inventory_notional)) / safe_capacity
+        trigger_ratio = max(0.0, float(cfg.max_inventory_equity_ratio))
+        recover_ratio = max(0.0, min(float(cfg.single_side_recover_ratio), trigger_ratio))
+
+        if self._inventory_side_mode == "only_sell" and inventory_notional < 0:
+            self._inventory_side_mode = "only_buy"
+        elif self._inventory_side_mode == "only_buy" and inventory_notional > 0:
+            self._inventory_side_mode = "only_sell"
+
+        if self._inventory_side_mode is not None and usage_ratio <= recover_ratio:
+            self._inventory_side_mode = None
+
+        if self._inventory_side_mode is None and usage_ratio >= trigger_ratio:
+            if inventory_notional > 0:
+                self._inventory_side_mode = "only_sell"
+            elif inventory_notional < 0:
+                self._inventory_side_mode = "only_buy"
+
+        return self._inventory_side_mode == "only_buy", self._inventory_side_mode == "only_sell"
+
+    async def _ensure_side_order(
+        self,
+        *,
+        cfg: RuntimeConfig,
+        side: str,
+        now: datetime,
+        existing: OrderSnapshot | None,
+        target_price: float,
+        target_size: float,
+    ) -> tuple[list[str], bool]:
+        reasons: list[str] = []
+        if existing is None:
+            reasons.append(f"missing-side-{side}")
+            await self._adapter.place_limit_order(
+                symbol=cfg.symbol,
+                side=side,
+                price=target_price,
+                size=target_size,
+                post_only=True,
+                client_order_id=self._new_client_order_id(side),
+            )
+            return reasons, True
+
+        order_age = max(0.0, (now - existing.created_at).total_seconds())
+        ttl_expired = order_age > cfg.order_ttl_sec
+        price_dev = self._price_deviation_bps(existing.price, target_price) > cfg.requote_threshold_bps
+        size_dev = self._size_deviation_ratio(existing.size, target_size) > cfg.requote_size_threshold_ratio
+
+        if ttl_expired:
+            reasons.append("ttl-expired")
+        if price_dev:
+            reasons.append(f"price-deviation-{side}")
+        if size_dev:
+            reasons.append(f"size-deviation-{side}")
+
+        should_replace = ttl_expired or ((price_dev or size_dev) and order_age >= cfg.min_order_age_before_requote_sec)
+        if not should_replace:
+            return [], False
+
+        # 先挂新单再撤旧单，尽量避免该侧出现“真空窗口”。
+        await self._adapter.place_limit_order(
+            symbol=cfg.symbol,
+            side=side,
+            price=target_price,
+            size=target_size,
+            post_only=True,
+            client_order_id=self._new_client_order_id(side),
+        )
+        await self._cancel_order_silent(cfg.symbol, existing.order_id)
+        return reasons, True
+
+    async def _cancel_order_silent(self, symbol: str, order_id: str) -> None:
+        try:
+            await self._adapter.cancel_order(symbol, order_id)
+        except Exception as exc:
+            self._logger.warning("撤单失败(order_id=%s): %s", order_id, exc)
+
+    @staticmethod
+    def _latest_order_by_side(orders: list[OrderSnapshot], side: str) -> OrderSnapshot | None:
+        candidates = [o for o in orders if o.side == side]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item.created_at)
 
     @staticmethod
     def _collect_requote_reasons(
@@ -696,7 +769,7 @@ class StrategyEngine:
 
     @staticmethod
     def _new_client_order_id(side: str) -> str:
-        # 使用较短的纯数字，避免超长整数在交易所侧精度/类型转换后产生重复判定。
+        # 使用较短的纯数字，避免交易所侧整数精度与类型转换导致重复判定。
         side_flag = "1" if side == "buy" else "2"
         nonce_ms = int(utcnow().timestamp() * 1_000)
         suffix = uuid.uuid4().int % 10_000

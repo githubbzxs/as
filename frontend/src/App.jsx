@@ -1,7 +1,7 @@
 ﻿import { useMemo, useState, useEffect } from "react";
 import {
   fetchExchangeConfig,
-  fetchGoalConfig,
+  fetchStrategyConfig,
   fetchMetrics,
   fetchOpenOrders,
   fetchRecentTrades,
@@ -12,17 +12,11 @@ import {
   startEngine,
   stopEngine,
   updateExchangeConfig,
-  updateGoalConfig,
+  updateStrategyConfig,
   updateTelegramConfig,
 } from "./api";
 
 const initialLogin = { username: "admin", password: "" };
-
-const riskProfileOptions = [
-  { value: "safe", label: "稳健", hint: "更保守，价差更宽，成交更慢。" },
-  { value: "balanced", label: "平衡", hint: "兼顾成交效率和风险控制。" },
-  { value: "throughput", label: "冲量", hint: "优先提高成交量，价差更紧、刷新更快。" },
-];
 
 const symbolOptions = [
   { value: "BNB_USDT_Perp", label: "BNB_USDT_Perp" },
@@ -154,12 +148,14 @@ export default function App() {
 
   const [status, setStatus] = useState(null);
   const [metrics, setMetrics] = useState(null);
-  const [goalConfig, setGoalConfig] = useState(null);
-  const [goalForm, setGoalForm] = useState({
+  const [strategyConfig, setStrategyConfig] = useState(null);
+  const [strategyForm, setStrategyForm] = useState({
     symbol: "BNB_USDT_Perp",
-    principal_usdt: 10,
-    target_hourly_notional: 10000,
-    risk_profile: "throughput",
+    as_gamma: 0.1,
+    as_sigma: 0.001,
+    as_liquidity_k: 1.5,
+    max_drawdown_pct: 9.0,
+    max_inventory_equity_ratio: 0.6,
   });
   const [exchangeConfig, setExchangeConfig] = useState(null);
   const [telegramConfig, setTelegramConfig] = useState(null);
@@ -177,7 +173,7 @@ export default function App() {
     telegram_chat_id: "",
   });
 
-  const [goalSaving, setGoalSaving] = useState(false);
+  const [strategySaving, setStrategySaving] = useState(false);
   const [exchangeSaving, setExchangeSaving] = useState(false);
   const [telegramSaving, setTelegramSaving] = useState(false);
   const [notice, setNotice] = useState("");
@@ -211,18 +207,20 @@ export default function App() {
 
   async function loadConfigData() {
     if (!token) return;
-    const [goalRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
-      fetchGoalConfig(token),
+    const [strategyRes, exchangeRes, telegramRes, secretRes] = await Promise.all([
+      fetchStrategyConfig(token),
       fetchExchangeConfig(token),
       fetchTelegramConfig(token),
       fetchSecretsStatus(token),
     ]);
-    setGoalConfig(goalRes);
-    setGoalForm({
-      symbol: goalRes.symbol,
-      principal_usdt: goalRes.principal_usdt,
-      target_hourly_notional: goalRes.target_hourly_notional,
-      risk_profile: goalRes.risk_profile,
+    setStrategyConfig(strategyRes);
+    setStrategyForm({
+      symbol: strategyRes.symbol,
+      as_gamma: strategyRes.as_gamma,
+      as_sigma: strategyRes.as_sigma,
+      as_liquidity_k: strategyRes.as_liquidity_k,
+      max_drawdown_pct: strategyRes.max_drawdown_pct,
+      max_inventory_equity_ratio: strategyRes.max_inventory_equity_ratio,
     });
     setExchangeConfig(exchangeRes);
     setTelegramConfig(telegramRes);
@@ -365,30 +363,33 @@ export default function App() {
     }
   }
 
-  async function saveGoal() {
-    setGoalSaving(true);
+  async function saveStrategy() {
+    setStrategySaving(true);
     setNotice("");
     try {
       const payload = {
-        symbol: goalForm.symbol,
-        principal_usdt: Number(goalForm.principal_usdt),
-        target_hourly_notional: Number(goalForm.target_hourly_notional),
-        risk_profile: goalForm.risk_profile,
-        env_mode: goalConfig?.env_mode || "testnet",
+        symbol: strategyForm.symbol,
+        as_gamma: Number(strategyForm.as_gamma),
+        as_sigma: Number(strategyForm.as_sigma),
+        as_liquidity_k: Number(strategyForm.as_liquidity_k),
+        max_drawdown_pct: Number(strategyForm.max_drawdown_pct),
+        max_inventory_equity_ratio: Number(strategyForm.max_inventory_equity_ratio),
       };
-      const updated = await updateGoalConfig(token, payload);
-      setGoalConfig(updated);
-      setGoalForm({
+      const updated = await updateStrategyConfig(token, payload);
+      setStrategyConfig(updated);
+      setStrategyForm({
         symbol: updated.symbol,
-        principal_usdt: updated.principal_usdt,
-        target_hourly_notional: updated.target_hourly_notional,
-        risk_profile: updated.risk_profile,
+        as_gamma: updated.as_gamma,
+        as_sigma: updated.as_sigma,
+        as_liquidity_k: updated.as_liquidity_k,
+        max_drawdown_pct: updated.max_drawdown_pct,
+        max_inventory_equity_ratio: updated.max_inventory_equity_ratio,
       });
-      setNotice("目标参数已保存");
+      setNotice("策略参数已保存");
     } catch (err) {
-      setError(err.message || "保存目标参数失败");
+      setError(err.message || "保存策略参数失败");
     } finally {
-      setGoalSaving(false);
+      setStrategySaving(false);
     }
   }
 
@@ -453,7 +454,6 @@ export default function App() {
   const summary = metrics?.summary || {};
   const series = metrics?.series || {};
   const wsMeta = wsStateMeta[wsState] || wsStateMeta.disconnected;
-  const selectedRisk = riskProfileOptions.find((x) => x.value === goalForm.risk_profile);
   const topOrders = [...orders]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 5);
@@ -496,12 +496,20 @@ export default function App() {
           <strong>{fmt(summary.equity, 2)}</strong>
         </div>
         <div className="card">
+          <span>可用资金(USDT)</span>
+          <strong>{fmt(summary.free_usdt, 2)}</strong>
+        </div>
+        <div className="card">
           <span>总PnL</span>
           <strong>{fmt(summary.pnl_total, 2)}</strong>
         </div>
         <div className="card">
           <span>净仓名义</span>
           <strong>{fmt(summary.inventory_notional, 2)}</strong>
+        </div>
+        <div className="card">
+          <span>库存占用比(可用×杠杆)</span>
+          <strong>{fmt((summary.inventory_usage_ratio || 0) * 100, 2)}%</strong>
         </div>
         <div className="card">
           <span>运行时长</span>
@@ -528,32 +536,15 @@ export default function App() {
 
       <section className="panel-grid">
         <div className="panel">
-          <h2>目标配置（极简）</h2>
-          <p className="panel-tip">只需要填写本金、目标小时交易量、风险档位，后端会自动映射全部运行参数。</p>
+          <h2>策略配置（AS 核心）</h2>
+          <p className="panel-tip">填写交易对、AS 三参数（gamma/sigma/k）和两项风控（最大回撤、最大库存占比）。</p>
           <div className="form-grid">
             <label>
-              <span>本金(USDT)</span>
-              <input
-                type="number"
-                step="0.1"
-                min="1"
-                value={goalForm.principal_usdt}
-                onChange={(e) => setGoalForm((s) => ({ ...s, principal_usdt: e.target.value }))}
-              />
-            </label>
-            <label>
-              <span>目标小时交易量(USDT)</span>
-              <input
-                type="number"
-                step="1"
-                min="100"
-                value={goalForm.target_hourly_notional}
-                onChange={(e) => setGoalForm((s) => ({ ...s, target_hourly_notional: e.target.value }))}
-              />
-            </label>
-            <label>
               <span>交易对</span>
-              <select value={goalForm.symbol} onChange={(e) => setGoalForm((s) => ({ ...s, symbol: e.target.value }))}>
+              <select
+                value={strategyForm.symbol}
+                onChange={(e) => setStrategyForm((s) => ({ ...s, symbol: e.target.value }))}
+              >
                 {symbolOptions.map((item) => (
                   <option key={item.value} value={item.value}>
                     {item.label}
@@ -562,33 +553,67 @@ export default function App() {
               </select>
             </label>
             <label>
-              <span>风险档位</span>
-              <select
-                value={goalForm.risk_profile}
-                onChange={(e) => setGoalForm((s) => ({ ...s, risk_profile: e.target.value }))}
-              >
-                {riskProfileOptions.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
+              <span>Gamma (γ)</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={strategyForm.as_gamma}
+                onChange={(e) => setStrategyForm((s) => ({ ...s, as_gamma: e.target.value }))}
+              />
             </label>
             <label>
-              <span>回测环境</span>
-              <input value={goalConfig?.env_mode || "testnet"} readOnly />
+              <span>Sigma (σ, 兜底值)</span>
+              <input
+                type="number"
+                step="0.0001"
+                min="0.000001"
+                value={strategyForm.as_sigma}
+                onChange={(e) => setStrategyForm((s) => ({ ...s, as_sigma: e.target.value }))}
+              />
             </label>
-            <button className="btn-primary" disabled={goalSaving} onClick={saveGoal}>
-              {goalSaving ? "保存中..." : "应用目标参数"}
+            <label>
+              <span>Liquidity k</span>
+              <input
+                type="number"
+                step="0.1"
+                min="0.1"
+                value={strategyForm.as_liquidity_k}
+                onChange={(e) => setStrategyForm((s) => ({ ...s, as_liquidity_k: e.target.value }))}
+              />
+            </label>
+            <label>
+              <span>最大回撤(%)</span>
+              <input
+                type="number"
+                step="0.1"
+                min="0.1"
+                value={strategyForm.max_drawdown_pct}
+                onChange={(e) => setStrategyForm((s) => ({ ...s, max_drawdown_pct: e.target.value }))}
+              />
+            </label>
+            <label>
+              <span>最大库存占比(权益比)</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={strategyForm.max_inventory_equity_ratio}
+                onChange={(e) => setStrategyForm((s) => ({ ...s, max_inventory_equity_ratio: e.target.value }))}
+              />
+            </label>
+            <button className="btn-primary" disabled={strategySaving} onClick={saveStrategy}>
+              {strategySaving ? "保存中..." : "应用策略参数"}
             </button>
           </div>
           <div className="preview-list">
-            <div>当前风险档解释: {selectedRisk?.hint || "-"}</div>
-            <div>预估单笔名义: {fmt(goalConfig?.runtime_preview?.max_single_order_notional, 2)}</div>
-            <div>预估刷新间隔(秒): {fmt(goalConfig?.runtime_preview?.quote_interval_sec, 2)}</div>
+            <div>实盘 sigma 以市场实时估计为主，手动 sigma 用于冷启动兜底。</div>
+            <div>最小重挂在簿时长(秒): {fmt(strategyConfig?.runtime_preview?.min_order_age_before_requote_sec, 2)}</div>
+            <div>挂单存活上限(秒): {fmt(strategyConfig?.runtime_preview?.order_ttl_sec, 2)}</div>
+            <div>预估刷新间隔(秒): {fmt(strategyConfig?.runtime_preview?.quote_interval_sec, 2)}</div>
             <div>
-              预估价差区间(bps): {fmt(goalConfig?.runtime_preview?.min_spread_bps, 2)} ~{" "}
-              {fmt(goalConfig?.runtime_preview?.max_spread_bps, 2)}
+              预估价差区间(bps): {fmt(strategyConfig?.runtime_preview?.min_spread_bps, 2)} ~{" "}
+              {fmt(strategyConfig?.runtime_preview?.max_spread_bps, 2)}
             </div>
             <div>每万交易额磨损: {fmt(summary.wear_per_10k, 2)}</div>
           </div>

@@ -34,12 +34,16 @@ class MonitoringService:
             inventory_base=0.0,
             inventory_notional=0.0,
             equity=0.0,
+            free_usdt=0.0,
+            effective_capacity_notional=0.0,
+            inventory_usage_ratio=0.0,
             pnl=0.0,
             pnl_total=0.0,
             pnl_daily=0.0,
             drawdown_pct=0.0,
             quote_size_base=0.0,
             quote_size_notional=0.0,
+            effective_liquidity_k=0.0,
             run_duration_sec=0.0,
             total_trade_count=0,
             total_trade_volume_notional=0.0,
@@ -146,12 +150,16 @@ class MonitoringService:
             inventory_base=tick.position.base_position,
             inventory_notional=tick.position.notional,
             equity=tick.equity,
+            free_usdt=tick.free_usdt,
+            effective_capacity_notional=tick.effective_capacity_notional,
+            inventory_usage_ratio=tick.inventory_usage_ratio,
             pnl=tick.pnl,
             pnl_total=tick.pnl_total,
             pnl_daily=tick.pnl_daily,
             drawdown_pct=drawdown_pct,
             quote_size_base=tick.decision.quote_size_base,
             quote_size_notional=tick.decision.quote_size_notional,
+            effective_liquidity_k=tick.effective_liquidity_k,
             run_duration_sec=run_duration,
             total_trade_count=self._total_trade_count,
             total_trade_volume_notional=self._total_trade_volume_notional,
@@ -201,6 +209,9 @@ class MonitoringService:
             if len(self._seen_trade_queue) > self._seen_trade_limit:
                 old = self._seen_trade_queue.popleft()
                 self._seen_trade_keys.discard(old)
+
+            if trade.created_at < self._session_started_at:
+                continue
 
             self._total_trade_count += 1
             notional = abs(float(trade.price) * float(trade.size))

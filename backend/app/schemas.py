@@ -50,6 +50,8 @@ class RuntimeConfig(BaseModel):
     equity_risk_pct: float = Field(default=0.10, ge=0.001, le=1.0)
     max_inventory_notional: float = Field(default=2200.0, ge=10)
     max_inventory_notional_pct: float = Field(default=0.35, ge=0.0, le=5.0)
+    max_inventory_equity_ratio: float = Field(default=0.60, ge=0.01, le=2.0)
+    single_side_recover_ratio: float = Field(default=0.45, ge=0.0, le=2.0)
     max_single_order_notional: float = Field(default=420.0, ge=1)
 
     min_spread_bps: float = Field(default=0.8, ge=0.1)
@@ -57,8 +59,9 @@ class RuntimeConfig(BaseModel):
 
     requote_threshold_bps: float = Field(default=0.3, ge=0.1)
     requote_size_threshold_ratio: float = Field(default=0.15, ge=0.0, le=1.0)
-    order_ttl_sec: int = Field(default=15, ge=1, le=300)
+    order_ttl_sec: int = Field(default=45, ge=1, le=300)
     quote_interval_sec: float = Field(default=0.45, ge=0.2, le=10)
+    min_order_age_before_requote_sec: float = Field(default=1.0, ge=0.0, le=60.0)
     min_order_size_base: float = Field(default=0.01, ge=0.000001)
 
     sigma_window_sec: int = Field(default=60, ge=10, le=600)
@@ -72,9 +75,12 @@ class RuntimeConfig(BaseModel):
     recovery_readonly_sec: int = Field(default=180, ge=10, le=1800)
 
     base_gamma: float = Field(default=0.10, ge=0.01, le=5.0)
+    as_sigma: float = Field(default=0.001, ge=0.000001, le=1.0)
     gamma_min: float = Field(default=0.02, ge=0.001, le=2.0)
     gamma_max: float = Field(default=0.8, ge=0.01, le=10.0)
     liquidity_k: float = Field(default=1.5, ge=0.1, le=30.0)
+    effective_leverage: float = Field(default=50.0, ge=1.0, le=200.0)
+    inventory_usage_mode: Literal["free_leveraged"] = "free_leveraged"
 
     tg_heartbeat_enabled: bool = True
     tg_heartbeat_interval_sec: int = Field(default=1800, ge=60, le=86400)
@@ -90,6 +96,15 @@ class RuntimeConfig(BaseModel):
         min_spread = data.get("min_spread_bps")
         if min_spread is not None and v < min_spread:
             raise ValueError("max_spread_bps 不能小于 min_spread_bps")
+        return v
+
+    @field_validator("single_side_recover_ratio")
+    @classmethod
+    def validate_single_side_recover_ratio(cls, v: float, info):
+        data = info.data
+        trigger_ratio = data.get("max_inventory_equity_ratio")
+        if trigger_ratio is not None and v > trigger_ratio:
+            raise ValueError("single_side_recover_ratio 不能大于 max_inventory_equity_ratio")
         return v
 
     @field_validator("symbol")
@@ -130,6 +145,28 @@ class GoalConfig(BaseModel):
 
 
 class GoalConfigView(GoalConfig):
+    runtime_preview: dict[str, float | int | str]
+
+
+class StrategyConfig(BaseModel):
+    symbol: str = "BNB_USDT_Perp"
+    as_gamma: float = Field(default=0.10, ge=0.01, le=5.0)
+    as_sigma: float = Field(default=0.001, ge=0.000001, le=1.0)
+    as_liquidity_k: float = Field(default=1.5, ge=0.1, le=30.0)
+    max_drawdown_pct: float = Field(default=9.0, ge=0.1, le=80.0)
+    max_inventory_equity_ratio: float = Field(default=0.60, ge=0.01, le=2.0)
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        normalized = normalize_symbol_text(value)
+        canonical = _SUPPORTED_GOAL_SYMBOLS_MAP.get(normalized.lower())
+        if canonical is None:
+            raise ValueError(f"symbol 仅支持: {', '.join(SUPPORTED_GOAL_SYMBOLS)}")
+        return canonical
+
+
+class StrategyConfigView(StrategyConfig):
     runtime_preview: dict[str, float | int | str]
 
 
@@ -203,12 +240,16 @@ class MetricsSummary(BaseModel):
     inventory_base: float
     inventory_notional: float
     equity: float
+    free_usdt: float = 0.0
+    effective_capacity_notional: float = 0.0
+    inventory_usage_ratio: float = 0.0
     pnl: float
     pnl_total: float = 0.0
     pnl_daily: float = 0.0
     drawdown_pct: float
     quote_size_base: float
     quote_size_notional: float
+    effective_liquidity_k: float = 0.0
     run_duration_sec: float = 0.0
     total_trade_count: int = 0
     total_trade_volume_notional: float = 0.0

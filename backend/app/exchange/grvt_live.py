@@ -1,8 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from functools import cached_property
 from typing import Any
 
@@ -11,11 +13,19 @@ from pysdk.grvt_ccxt_env import GrvtEnv
 
 from app.core.settings import Settings
 from app.exchange.base import ExchangeAdapter
-from app.models import MarketSnapshot, OrderSnapshot, PositionSnapshot, TradeSnapshot
+from app.models import AccountFundsSnapshot, MarketSnapshot, OrderSnapshot, PositionSnapshot, TradeSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentConstraints:
+    min_size: float
+    size_step: float
+    tick_size: float
+    base_decimals: int
 
 
 class GrvtLiveAdapter(ExchangeAdapter):
-    """基于 grvt-pysdk 的真实交易适配器。"""
+    """基于 grvt-pysdk 的实盘交易适配器。"""
 
     FIXED_SCALE = 1_000_000_000
 
@@ -36,6 +46,7 @@ class GrvtLiveAdapter(ExchangeAdapter):
         self._grvt_trading_account_id = (
             settings.grvt_trading_account_id if grvt_trading_account_id is None else grvt_trading_account_id
         )
+        self._instrument_constraints_cache: dict[str, InstrumentConstraints] = {}
 
     @cached_property
     def _client(self) -> GrvtCcxt:
@@ -77,7 +88,7 @@ class GrvtLiveAdapter(ExchangeAdapter):
         ticker = ticker_result
         order_book: dict[str, Any] = {}
         if isinstance(ob_result, Exception):
-            self._logger.warning("读取 order_book 失败，降级为 ticker-only: %s", ob_result)
+            self._logger.warning("璇诲彇 order_book 澶辫触锛岄檷绾т负 ticker-only: %s", ob_result)
         elif isinstance(ob_result, dict):
             order_book = ob_result
 
@@ -112,31 +123,72 @@ class GrvtLiveAdapter(ExchangeAdapter):
             timestamp=datetime.now(timezone.utc),
         )
 
-    async def fetch_equity(self) -> float:
+    async def fetch_account_funds(self) -> AccountFundsSnapshot:
         balance = await asyncio.to_thread(self._client.fetch_balance, "aggregated")
         if not isinstance(balance, dict):
-            return 0.0
+            return AccountFundsSnapshot(equity_usdt=0.0, free_usdt=0.0, used_usdt=0.0, source="invalid-balance")
+
+        source_parts: list[str] = []
+        equity = 0.0
+        free = 0.0
+        used = 0.0
 
         usdt = balance.get("USDT", {})
         if isinstance(usdt, dict):
-            direct_total = usdt.get("total")
-            if direct_total is not None:
-                return float(self._decode_fixed(direct_total))
-            free = self._decode_fixed(usdt.get("free", 0.0))
-            used = self._decode_fixed(usdt.get("used", 0.0))
-            if free or used:
-                return float(free + used)
+            if usdt.get("free") is not None:
+                free = self._decode_fixed(usdt.get("free", 0.0))
+                source_parts.append("USDT.free")
+            if usdt.get("used") is not None:
+                used = self._decode_fixed(usdt.get("used", 0.0))
+                source_parts.append("USDT.used")
+            if usdt.get("total") is not None:
+                equity = self._decode_fixed(usdt.get("total", 0.0))
+                source_parts.append("USDT.total")
 
-        totals = balance.get("total", {})
-        if isinstance(totals, dict) and totals.get("USDT") is not None:
-            return float(self._decode_fixed(totals.get("USDT")))
+        free_from_map = self._extract_usdt_from_map(balance.get("free"))
+        if free_from_map is not None:
+            free = free_from_map
+            source_parts.append("free.USDT")
 
-        for key in ("equity", "account_value", "nav"):
-            if balance.get(key) is not None:
-                return float(self._decode_fixed(balance.get(key)))
+        used_from_map = self._extract_usdt_from_map(balance.get("used"))
+        if used_from_map is not None:
+            used = used_from_map
+            source_parts.append("used.USDT")
 
-        self._logger.warning("fetch_balance 未命中标准权益字段，可用keys=%s", ",".join(balance.keys()))
-        return 0.0
+        total_from_map = self._extract_usdt_from_map(balance.get("total"))
+        if total_from_map is not None:
+            equity = total_from_map
+            source_parts.append("total.USDT")
+
+        if equity <= 0:
+            for key in ("equity", "account_value", "nav"):
+                if balance.get(key) is None:
+                    continue
+                equity = self._decode_fixed(balance.get(key))
+                source_parts.append(key)
+                break
+
+        if equity <= 0 and (free > 0 or used > 0):
+            equity = max(0.0, free + used)
+            source_parts.append("free+used")
+
+        if free <= 0 and equity > 0:
+            free = max(0.0, equity - max(0.0, used))
+            source_parts.append("equity-used")
+
+        if not source_parts:
+            self._logger.warning("fetch_balance 未命中标准权益字段，可用keys=%s", ",".join(balance.keys()))
+        source = ",".join(dict.fromkeys(source_parts)) if source_parts else "unknown"
+        return AccountFundsSnapshot(
+            equity_usdt=float(max(0.0, equity)),
+            free_usdt=float(max(0.0, free)),
+            used_usdt=float(max(0.0, used)),
+            source=source,
+        )
+
+    async def fetch_equity(self) -> float:
+        funds = await self.fetch_account_funds()
+        return float(funds.equity_usdt)
 
     async def fetch_position(self, symbol: str) -> PositionSnapshot:
         ex_symbol = self._normalize_symbol(symbol)
@@ -200,6 +252,7 @@ class GrvtLiveAdapter(ExchangeAdapter):
                     size=self._decode_fixed(row.get("size", 0.0)),
                     fee=self._decode_fixed(row.get("fee", 0.0)),
                     created_at=self._parse_dt(row.get("event_time") or row.get("created_at")),
+                    symbol=ex_symbol,
                 )
             )
         return trades
@@ -214,6 +267,17 @@ class GrvtLiveAdapter(ExchangeAdapter):
         client_order_id: str,
     ) -> OrderSnapshot:
         ex_symbol = self._normalize_symbol(symbol)
+        constraints = await self._get_instrument_constraints(ex_symbol)
+        quantized_size = self._quantize_order_size(size, constraints)
+        if abs(quantized_size - float(size)) > 1e-12:
+            self._logger.info(
+                "涓嬪崟閲忓凡鎸変氦鏄撳姝ラ暱瀵归綈 symbol=%s raw_size=%.12f quantized_size=%.12f size_step=%.12f min_size=%.12f",
+                ex_symbol,
+                float(size),
+                quantized_size,
+                constraints.size_step,
+                constraints.min_size,
+            )
         params = {
             "post_only": bool(post_only),
             "client_order_id": client_order_id,
@@ -223,7 +287,7 @@ class GrvtLiveAdapter(ExchangeAdapter):
             ex_symbol,
             "limit",
             "buy" if side == "buy" else "sell",
-            size,
+            quantized_size,
             price,
             params,
         )
@@ -232,7 +296,7 @@ class GrvtLiveAdapter(ExchangeAdapter):
             order_id=oid,
             side="buy" if side == "buy" else "sell",
             price=float(price),
-            size=float(size),
+            size=quantized_size,
             status="open",
             created_at=datetime.now(timezone.utc),
         )
@@ -286,6 +350,157 @@ class GrvtLiveAdapter(ExchangeAdapter):
             return
         side = "sell" if pos.base_position > 0 else "buy"
         await self.close_position_taker(symbol=symbol, side=side, size=size, reduce_only=True)
+
+    async def _get_instrument_constraints(self, symbol: str) -> InstrumentConstraints:
+        ex_symbol = self._normalize_symbol(symbol)
+        cache_key = ex_symbol.lower()
+        cached = self._instrument_constraints_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        constraints = await asyncio.to_thread(self._load_instrument_constraints, ex_symbol)
+        self._instrument_constraints_cache[cache_key] = constraints
+        return constraints
+
+    def _load_instrument_constraints(self, symbol: str) -> InstrumentConstraints:
+        instrument = self._fetch_instrument(symbol)
+        if instrument is None:
+            self._logger.warning("鏈鍙栧埌浜ゆ槗瀵瑰厓鏁版嵁锛屼娇鐢ㄩ粯璁や笅鍗曟闀?symbol=%s", symbol)
+            return InstrumentConstraints(
+                min_size=0.0,
+                size_step=1e-6,
+                tick_size=0.0,
+                base_decimals=6,
+            )
+        return self._build_instrument_constraints(instrument)
+
+    def _fetch_instrument(self, symbol: str) -> dict[str, Any] | None:
+        try:
+            market = self._client.fetch_market(symbol)
+            instrument = self._extract_instrument(market, symbol)
+            if instrument is not None:
+                return instrument
+        except Exception as exc:
+            self._logger.warning("fetch_market 璇诲彇浜ゆ槗瀵瑰厓鏁版嵁澶辫触 symbol=%s: %s", symbol, exc)
+
+        params: dict[str, Any] = {"kind": "PERPETUAL"}
+        parts = symbol.split("_")
+        if len(parts) >= 3:
+            params["base"] = parts[0]
+            params["quote"] = parts[1]
+
+        try:
+            markets = self._client.fetch_markets(params)
+        except TypeError:
+            try:
+                markets = self._client.fetch_markets({})
+            except Exception as exc:
+                self._logger.warning("fetch_markets 璇诲彇浜ゆ槗瀵瑰厓鏁版嵁澶辫触 symbol=%s: %s", symbol, exc)
+                return None
+        except Exception as exc:
+            self._logger.warning("fetch_markets 璇诲彇浜ゆ槗瀵瑰厓鏁版嵁澶辫触 symbol=%s: %s", symbol, exc)
+            return None
+        return self._extract_instrument(markets, symbol)
+
+    @classmethod
+    def _extract_instrument(cls, payload: Any, symbol: str) -> dict[str, Any] | None:
+        rows: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            result = payload.get("result")
+            if isinstance(result, dict):
+                rows.append(result)
+            elif isinstance(result, list):
+                rows.extend(item for item in result if isinstance(item, dict))
+            if "instrument" in payload:
+                rows.append(payload)
+        elif isinstance(payload, list):
+            rows.extend(item for item in payload if isinstance(item, dict))
+
+        if not rows:
+            return None
+
+        for row in rows:
+            instrument = str(row.get("instrument", "")).strip()
+            if instrument and cls._symbol_equal(instrument, symbol):
+                return row
+        return rows[0] if len(rows) == 1 else None
+
+    def _build_instrument_constraints(self, instrument: dict[str, Any]) -> InstrumentConstraints:
+        min_size = max(0.0, self._decode_fixed(instrument.get("min_size", 0.0)))
+        tick_size = max(0.0, self._decode_fixed(instrument.get("tick_size", 0.0)))
+        base_decimals = max(0, self._safe_int(instrument.get("base_decimals"), 0))
+
+        size_step = 0.0
+        explicit_step_found = False
+        for key in (
+            "size_step",
+            "size_increment",
+            "step_size",
+            "quantity_step",
+            "lot_step",
+            "order_size_step",
+            "contract_size_step",
+        ):
+            candidate = self._decode_fixed(instrument.get(key, 0.0))
+            if candidate > 0:
+                size_step = candidate
+                explicit_step_found = True
+                break
+
+        if size_step <= 0 and base_decimals > 0:
+            size_step = 10 ** (-base_decimals)
+        if size_step <= 0 and min_size > 0:
+            size_step = self._infer_decimal_step(min_size)
+        if size_step <= 0:
+            size_step = 1e-6
+        if min_size > 0 and not explicit_step_found:
+            size_step = max(size_step, self._infer_decimal_step(min_size))
+
+        return InstrumentConstraints(
+            min_size=min_size,
+            size_step=size_step,
+            tick_size=tick_size,
+            base_decimals=base_decimals,
+        )
+
+    @staticmethod
+    def _quantize_order_size(raw_size: float, constraints: InstrumentConstraints) -> float:
+        raw_dec = Decimal(str(max(0.0, float(raw_size))))
+        step_dec = Decimal(str(max(constraints.size_step, 1e-12)))
+        min_dec = Decimal(str(max(constraints.min_size, 0.0)))
+
+        quantized = (raw_dec / step_dec).to_integral_value(rounding=ROUND_DOWN) * step_dec
+        if min_dec > 0 and quantized < min_dec:
+            quantized = (min_dec / step_dec).to_integral_value(rounding=ROUND_UP) * step_dec
+
+        if quantized <= 0:
+            raise ValueError(
+                "涓嬪崟閲忛噺鍖栧悗鏃犳晥"
+                f" raw_size={raw_size} size_step={constraints.size_step} min_size={constraints.min_size}"
+            )
+        return float(quantized)
+
+    @staticmethod
+    def _infer_decimal_step(value: float) -> float:
+        dec = Decimal(str(abs(float(value))))
+        exponent = dec.as_tuple().exponent
+        if exponent >= 0:
+            return 1.0
+        return float(Decimal(1).scaleb(exponent))
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def _extract_usdt_from_map(self, payload: Any) -> float | None:
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("USDT") is None:
+            return None
+        return self._decode_fixed(payload.get("USDT"))
 
     def _decode_fixed(self, value: Any) -> float:
         if value is None:
@@ -364,3 +579,4 @@ class GrvtLiveAdapter(ExchangeAdapter):
     @classmethod
     def _symbol_equal(cls, left: str, right: str) -> bool:
         return cls._normalize_symbol(left).lower() == cls._normalize_symbol(right).lower()
+

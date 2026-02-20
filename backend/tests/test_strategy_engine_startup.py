@@ -1,16 +1,21 @@
-import asyncio
+﻿import asyncio
+from datetime import timedelta
 from unittest.mock import AsyncMock, Mock
 
 from app.engine.strategy_engine import StrategyEngine
-from app.models import OrderSnapshot, PositionSnapshot, QuoteDecision, utcnow
+from app.models import AccountFundsSnapshot, OrderSnapshot, PositionSnapshot, QuoteDecision, utcnow
 from app.schemas import RuntimeConfig
 
 
 def _build_engine(config: RuntimeConfig | None = None):
     adapter = Mock()
     adapter.cancel_all_orders = AsyncMock()
+    adapter.cancel_order = AsyncMock()
     adapter.fetch_open_orders = AsyncMock(return_value=[])
     adapter.place_limit_order = AsyncMock()
+    adapter.fetch_account_funds = AsyncMock(
+        return_value=AccountFundsSnapshot(equity_usdt=1000.0, free_usdt=500.0, used_usdt=500.0, source="test")
+    )
     adapter.fetch_position = AsyncMock(return_value=PositionSnapshot(symbol="BNB_USDT_Perp", base_position=0.0, notional=0.0))
     adapter.flatten_position_taker = AsyncMock()
 
@@ -76,10 +81,10 @@ def test_sync_orders_places_both_sides_when_orders_missing():
 
     async def scenario():
         return await engine._sync_orders(
-            cfg,
-            position,
-            decision,
-            max_inventory_notional=cfg.max_inventory_notional,
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=position,
+            decision=decision,
         )  # noqa: SLF001
 
     result = asyncio.run(scenario())
@@ -87,7 +92,8 @@ def test_sync_orders_places_both_sides_when_orders_missing():
     assert result.requoted is True
     assert set(result.reason.split(",")) == {"missing-side-buy", "missing-side-sell"}
 
-    adapter.cancel_all_orders.assert_awaited_once_with(cfg.symbol)
+    adapter.cancel_all_orders.assert_not_awaited()
+    adapter.cancel_order.assert_not_awaited()
     assert adapter.place_limit_order.await_count == 2
 
     side_to_call = {call.kwargs["side"]: call.kwargs for call in adapter.place_limit_order.await_args_list}
@@ -110,7 +116,7 @@ def test_sync_orders_requotes_when_size_deviation_exceeds_threshold():
         order_ttl_sec=60,
     )
     engine, adapter, _, _, _ = _build_engine(cfg)
-    now = utcnow()
+    now = utcnow() - timedelta(seconds=2)
     existing_orders = [
         OrderSnapshot(
             order_id="b1",
@@ -144,17 +150,18 @@ def test_sync_orders_requotes_when_size_deviation_exceeds_threshold():
 
     async def scenario():
         return await engine._sync_orders(
-            cfg,
-            position,
-            decision,
-            max_inventory_notional=cfg.max_inventory_notional,
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=position,
+            decision=decision,
         )  # noqa: SLF001
 
     result = asyncio.run(scenario())
     assert result.requoted is True
     assert "size-deviation-buy" in result.reason
     assert "size-deviation-sell" in result.reason
-    adapter.cancel_all_orders.assert_awaited_once_with(cfg.symbol)
+    adapter.cancel_all_orders.assert_not_awaited()
+    assert adapter.cancel_order.await_count == 2
     assert adapter.place_limit_order.await_count == 2
 
 
@@ -175,10 +182,10 @@ def test_sync_orders_keeps_two_sides_when_inventory_notional_not_far_over_limit(
 
     async def scenario():
         return await engine._sync_orders(  # noqa: SLF001
-            cfg,
-            position,
-            decision,
-            max_inventory_notional=100.0,
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=position,
+            decision=decision,
         )
 
     result = asyncio.run(scenario())
@@ -193,7 +200,7 @@ def test_sync_orders_switches_to_single_side_when_inventory_notional_far_over_li
     cfg = RuntimeConfig(symbol="BNB_USDT_Perp")
     engine, adapter, _, _, _ = _build_engine(cfg)
 
-    position = PositionSnapshot(symbol=cfg.symbol, base_position=0.0, notional=160.0)
+    position = PositionSnapshot(symbol=cfg.symbol, base_position=0.0, notional=700.0)
     decision = QuoteDecision(
         bid_price=100.0,
         ask_price=100.2,
@@ -206,10 +213,10 @@ def test_sync_orders_switches_to_single_side_when_inventory_notional_far_over_li
 
     async def scenario():
         return await engine._sync_orders(  # noqa: SLF001
-            cfg,
-            position,
-            decision,
-            max_inventory_notional=100.0,
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=position,
+            decision=decision,
         )
 
     result = asyncio.run(scenario())
@@ -218,6 +225,101 @@ def test_sync_orders_switches_to_single_side_when_inventory_notional_far_over_li
 
     side_to_call = [call.kwargs["side"] for call in adapter.place_limit_order.await_args_list]
     assert side_to_call == ["sell"]
+
+
+def test_sync_orders_respects_min_order_age_before_requote():
+    cfg = RuntimeConfig(
+        symbol="BNB_USDT_Perp",
+        requote_threshold_bps=0.1,
+        min_order_age_before_requote_sec=1.0,
+        order_ttl_sec=60,
+    )
+    engine, adapter, _, _, _ = _build_engine(cfg)
+    now = utcnow()
+    existing_orders = [
+        OrderSnapshot(
+            order_id="b1",
+            side="buy",
+            price=100.0,
+            size=0.1,
+            status="open",
+            created_at=now,
+        ),
+        OrderSnapshot(
+            order_id="s1",
+            side="sell",
+            price=100.2,
+            size=0.1,
+            status="open",
+            created_at=now,
+        ),
+    ]
+    adapter.fetch_open_orders = AsyncMock(return_value=existing_orders)
+
+    decision = QuoteDecision(
+        bid_price=99.5,
+        ask_price=100.8,
+        quote_size_base=0.1,
+        quote_size_notional=10.0,
+        spread_bps=20.0,
+        gamma=0.2,
+        reservation_price=100.1,
+    )
+    position = PositionSnapshot(symbol=cfg.symbol, base_position=0.0, notional=0.0)
+
+    async def scenario():
+        return await engine._sync_orders(  # noqa: SLF001
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=position,
+            decision=decision,
+        )
+
+    result = asyncio.run(scenario())
+    assert result.requoted is False
+    adapter.place_limit_order.assert_not_awaited()
+    adapter.cancel_order.assert_not_awaited()
+
+
+def test_inventory_single_side_hysteresis_recover_to_two_side():
+    cfg = RuntimeConfig(
+        symbol="BNB_USDT_Perp",
+        max_inventory_equity_ratio=0.60,
+        single_side_recover_ratio=0.45,
+    )
+    engine, adapter, _, _, _ = _build_engine(cfg)
+    decision = QuoteDecision(
+        bid_price=100.0,
+        ask_price=100.2,
+        quote_size_base=0.1,
+        quote_size_notional=10.0,
+        spread_bps=20.0,
+        gamma=0.2,
+        reservation_price=100.1,
+    )
+
+    async def first_call():
+        return await engine._sync_orders(  # noqa: SLF001
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=PositionSnapshot(symbol=cfg.symbol, base_position=0.0, notional=700.0),
+            decision=decision,
+        )
+
+    async def second_call():
+        return await engine._sync_orders(  # noqa: SLF001
+            cfg=cfg,
+            effective_capacity_notional=1000.0,
+            position=PositionSnapshot(symbol=cfg.symbol, base_position=0.0, notional=400.0),
+            decision=decision,
+        )
+
+    first = asyncio.run(first_call())
+    second = asyncio.run(second_call())
+
+    assert "inventory-limit" in first.reason
+    assert "missing-side-buy" in second.reason
+    assert "missing-side-sell" in second.reason
 
 
 def test_ensure_min_quote_size_applies_floor():
@@ -260,19 +362,42 @@ def test_post_only_guard_rounds_price_to_tick():
     assert decision.bid_price < decision.ask_price
 
 
-def test_volume_tuning_tightens_when_below_target():
-    engine, _, _, _, _ = _build_engine()
-    now = engine._last_status_at  # noqa: SLF001
-    engine._maybe_adjust_volume_tuning(  # noqa: SLF001
-        target_hourly_notional=10000.0,
-        actual_hourly_notional=3000.0,
-        now=now,
-    )
-    assert engine._spread_tune_factor < 1.0  # noqa: SLF001
-    assert engine._interval_tune_factor < 1.0  # noqa: SLF001
-
-
 def test_effective_quote_interval_is_clamped():
     engine, _, _, _, _ = _build_engine()
-    engine._interval_tune_factor = 0.1  # noqa: SLF001
-    assert engine._effective_quote_interval(0.3) == 0.2  # noqa: SLF001
+    assert engine._effective_quote_interval(0.1) == 0.2  # noqa: SLF001
+
+
+def test_inventory_usage_uses_free_leveraged_capacity():
+    cfg = RuntimeConfig(
+        symbol="BNB_USDT_Perp",
+        max_inventory_equity_ratio=0.6,
+        effective_leverage=50.0,
+    )
+    engine_high, _, _, _, _ = _build_engine(cfg)
+    engine_low, _, _, _, _ = _build_engine(cfg)
+
+    capacity = engine_high._effective_capacity_notional(cfg, free_usdt=8.0)  # noqa: SLF001
+    assert capacity == 400.0
+
+    only_buy, only_sell = engine_high._resolve_inventory_side_mode(  # noqa: SLF001
+        cfg,
+        inventory_notional=300.0,
+        effective_capacity_notional=capacity,
+    )
+    assert only_buy is False
+    assert only_sell is True
+
+    only_buy, only_sell = engine_low._resolve_inventory_side_mode(  # noqa: SLF001
+        cfg,
+        inventory_notional=200.0,
+        effective_capacity_notional=capacity,
+    )
+    assert only_buy is False
+    assert only_sell is False
+
+
+def test_effective_liquidity_k_clamped_by_depth_factor():
+    assert abs(StrategyEngine._effective_liquidity_k(1.5, 0.2) - 0.75) < 1e-9  # noqa: SLF001
+    assert abs(StrategyEngine._effective_liquidity_k(1.5, 1.2) - 1.8) < 1e-9  # noqa: SLF001
+    assert abs(StrategyEngine._effective_liquidity_k(1.5, 10.0) - 3.0) < 1e-9  # noqa: SLF001
+

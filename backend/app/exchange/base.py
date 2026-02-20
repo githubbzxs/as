@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from app.models import MarketSnapshot, OrderSnapshot, PositionSnapshot, TradeSnapshot
+from app.models import AccountFundsSnapshot, MarketSnapshot, OrderSnapshot, PositionSnapshot, TradeSnapshot
 
 
 class ExchangeAdapter(ABC):
@@ -19,6 +19,10 @@ class ExchangeAdapter(ABC):
     @abstractmethod
     async def fetch_equity(self) -> float:
         """读取账户权益。"""
+
+    @abstractmethod
+    async def fetch_account_funds(self) -> AccountFundsSnapshot:
+        """读取账户资金快照（权益/可用/占用）。"""
 
     @abstractmethod
     async def fetch_position(self, symbol: str) -> PositionSnapshot:
