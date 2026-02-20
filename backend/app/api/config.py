@@ -13,11 +13,14 @@ from app.schemas import (
     RuntimeProfileConfig,
     RuntimeProfileView,
     SecretsStatus,
+    StrategyConfig,
+    StrategyConfigView,
     TelegramConfigUpdateRequest,
     TelegramConfigView,
 )
 from app.services.goal_mapper import goal_to_runtime_config, goal_to_view, runtime_to_goal_config
 from app.services.profile_mapper import profile_to_runtime_config, runtime_to_profile_view
+from app.services.strategy_mapper import runtime_to_strategy_config, strategy_to_runtime_config, strategy_to_view
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -30,7 +33,7 @@ async def get_runtime_config(container=Depends(get_container)) -> RuntimeConfig:
 @router.put("/runtime", response_model=RuntimeConfig, dependencies=[Depends(require_user)])
 async def update_runtime_config(payload: RuntimeConfig, container=Depends(get_container)) -> RuntimeConfig:
     cfg = container.config_store.update(payload.model_dump())
-    container.config_store.set_goal(runtime_to_goal_config(cfg))
+    container.config_store.set_strategy(runtime_to_strategy_config(cfg))
     await container.engine.refresh_runtime_config()
     return cfg
 
@@ -44,9 +47,31 @@ async def get_runtime_profile(container=Depends(get_container)) -> RuntimeProfil
 async def update_runtime_profile(payload: RuntimeProfileConfig, container=Depends(get_container)) -> RuntimeProfileView:
     mapped = profile_to_runtime_config(payload, container.config_store.get())
     cfg = container.config_store.update(mapped.model_dump())
-    container.config_store.set_goal(runtime_to_goal_config(cfg))
+    container.config_store.set_strategy(runtime_to_strategy_config(cfg))
     await container.engine.refresh_runtime_config()
     return runtime_to_profile_view(cfg)
+
+
+@router.get("/strategy", response_model=StrategyConfigView, dependencies=[Depends(require_user)])
+async def get_strategy_config(container=Depends(get_container)) -> StrategyConfigView:
+    strategy = container.config_store.get_strategy()
+    runtime = container.config_store.get()
+    return strategy_to_view(strategy, runtime)
+
+
+@router.put("/strategy", response_model=StrategyConfigView, dependencies=[Depends(require_user)])
+async def update_strategy_config(payload: StrategyConfig, container=Depends(get_container)) -> StrategyConfigView:
+    current = container.config_store.get_strategy()
+    if container.engine.mode not in {"idle", "halted"} and payload.symbol != current.symbol:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="引擎运行中禁止切换交易对，请先停止引擎",
+        )
+    mapped = strategy_to_runtime_config(payload, container.config_store.get())
+    cfg = container.config_store.update(mapped.model_dump())
+    strategy = container.config_store.set_strategy(payload)
+    await container.engine.refresh_runtime_config()
+    return strategy_to_view(strategy, cfg)
 
 
 @router.get("/goal", response_model=GoalConfigView, dependencies=[Depends(require_user)])
@@ -58,6 +83,7 @@ async def get_goal_config(container=Depends(get_container)) -> GoalConfigView:
 
 @router.put("/goal", response_model=GoalConfigView, dependencies=[Depends(require_user)])
 async def update_goal_config(payload: GoalConfig, container=Depends(get_container)) -> GoalConfigView:
+    # 兼容旧接口：内部仍允许写入，但前端主入口已迁移到 /strategy。
     current_goal = container.config_store.get_goal()
     if "symbol" not in payload.model_fields_set:
         payload = GoalConfig.model_validate(

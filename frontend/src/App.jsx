@@ -22,6 +22,7 @@ const symbolOptions = [
   { value: "BNB_USDT_Perp", label: "BNB_USDT_Perp" },
   { value: "XRP_USDT_Perp", label: "XRP_USDT_Perp" },
   { value: "SUI_USDT_Perp", label: "SUI_USDT_Perp" },
+  { value: "HYPE_USDT_Perp", label: "HYPE_USDT_Perp" },
 ];
 
 const wsStateMeta = {

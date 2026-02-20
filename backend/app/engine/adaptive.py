@@ -14,6 +14,7 @@ class AdaptiveController:
         self._trade_intensity: deque[float] = deque(maxlen=maxlen)
         self._sigma_history: deque[float] = deque(maxlen=maxlen)
         self._last_mid: float | None = None
+        self._sigma_fallback: float = 0.001
         self._sigma_window_points: int = 60
         self._sigma_z_window_points: int = 180
         self._ewma_lambda: float = 0.94
@@ -23,6 +24,11 @@ class AdaptiveController:
         points = max(10, min(600, points))
         self._sigma_window_points = points
         self._sigma_z_window_points = max(20, min(2000, points * 3))
+
+    def set_sigma_baseline(self, sigma: float) -> None:
+        if sigma <= 0:
+            return
+        self._sigma_fallback = max(1e-6, float(sigma))
 
     def update(self, mid: float, depth_score: float, trade_intensity: float) -> tuple[float, float]:
         if self._last_mid and self._last_mid > 0:
@@ -40,10 +46,10 @@ class AdaptiveController:
 
     def current_sigma(self) -> float:
         if len(self._returns) < 4:
-            return 0.001
+            return self._sigma_fallback
         recent = list(self._returns)[-self._sigma_window_points :]
         if len(recent) < 4:
-            return 0.001
+            return self._sigma_fallback
         ewma_var = max(recent[0] * recent[0], 1e-12)
         lam = self._ewma_lambda
         for ret in recent[1:]:
@@ -83,8 +89,7 @@ class AdaptiveController:
 
     def quote_size_factor(self) -> float:
         sigma = self.current_sigma()
-        baseline = 0.001
-        ratio = sigma / baseline
+        ratio = sigma / max(self._sigma_fallback, 1e-9)
         if ratio <= 1:
             return 1.0
         # 波动越大，挂单量越小。

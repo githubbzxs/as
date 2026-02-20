@@ -9,12 +9,14 @@ def test_runtime_config_store_update(tmp_path: Path):
     cfg = store.get()
     assert cfg.symbol
 
-    updated = store.update({"symbol": "BNB_USDT_Perp", "equity_risk_pct": 0.12})
+    updated = store.update({"symbol": "HYPE_USDT_Perp", "equity_risk_pct": 0.12})
     assert updated.equity_risk_pct == 0.12
 
     store2 = RuntimeConfigStore(path)
     assert store2.get().equity_risk_pct == 0.12
-    assert store2.get_goal().symbol == "BNB_USDT_Perp"
+    assert store2.get_strategy().symbol == "HYPE_USDT_Perp"
+    assert store2.get_strategy().as_gamma > 0
+    assert store2.get_goal().symbol == "HYPE_USDT_Perp"
     assert store2.get_goal().target_hourly_notional >= 100
 
 
@@ -26,5 +28,7 @@ def test_runtime_config_store_migrates_legacy_format(tmp_path: Path):
     )
     store = RuntimeConfigStore(path)
     assert store.get().equity_risk_pct == 0.11
+    assert store.get_strategy().symbol == "BNB_USDT_Perp"
+    assert store.get_strategy().as_liquidity_k > 0
     assert store.get_goal().symbol == "BNB_USDT_Perp"
     assert store.get_goal().principal_usdt >= 1.0

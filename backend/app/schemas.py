@@ -10,6 +10,7 @@ SUPPORTED_GOAL_SYMBOLS: tuple[str, ...] = (
     "BNB_USDT_Perp",
     "XRP_USDT_Perp",
     "SUI_USDT_Perp",
+    "HYPE_USDT_Perp",
 )
 _SUPPORTED_GOAL_SYMBOLS_MAP = {symbol.lower(): symbol for symbol in SUPPORTED_GOAL_SYMBOLS}
 

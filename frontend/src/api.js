@@ -60,12 +60,12 @@ export async function updateRuntimeProfile(token, payload) {
   });
 }
 
-export async function fetchGoalConfig(token) {
-  return apiRequest("/api/config/goal", { token });
+export async function fetchStrategyConfig(token) {
+  return apiRequest("/api/config/strategy", { token });
 }
 
-export async function updateGoalConfig(token, payload) {
-  return apiRequest("/api/config/goal", {
+export async function updateStrategyConfig(token, payload) {
+  return apiRequest("/api/config/strategy", {
     method: "PUT",
     token,
     body: payload,

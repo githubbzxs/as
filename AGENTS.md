@@ -22,6 +22,13 @@
 
 ## Facts
 
+- **[2026-02-20] HYPE 交易对接入**：策略配置与前端交易对选项新增 `HYPE_USDT_Perp`，与现有 `BNB/XRP/SUI` 同口径管理。
+  - Impact：`backend/app/schemas.py`、`frontend/src/App.jsx`、`backend/tests/test_goal_api.py`、`backend/tests/test_strategy_mapper.py`、`backend/tests/test_runtime_config.py`
+
+- **[2026-02-20] 下单量约束解析增强**：交易对约束解析新增 CCXT 风格字段兼容（`limits.amount.min`、`precision.amount`、`info.*`），并补齐多交易对量化回归测试。
+  - Why：修复 `XRP/SUI` 场景下元数据命中不足导致的粒度拒单。
+  - Impact：`backend/app/exchange/grvt_live.py`、`backend/tests/test_grvt_order_size_quantize.py`
+
 - **[2026-02-20] 库存占比口径切换为可用资金杠杆口径**：单边触发与库存上限运行时口径已改为 `free_usdt * effective_leverage`，不再直接使用 `equity` 作为分母。
   - Why：修复小本金高杠杆场景（如 8u*50x）下“权益占比”与实际可开仓能力脱节的问题。
   - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/exchange/grvt_live.py`、`backend/app/models.py`、`backend/app/schemas.py`
@@ -157,6 +164,10 @@
 
 ## Decisions
 
+- **[2026-02-20] 交易对约束缺失策略**：当 `min_size/size_step` 无法可靠解析时，适配器改为阻断下单并抛出明确错误，不再回退默认步长下单。
+  - Why：优先避免重复触发 `2065` 粒度拒单风暴，提升故障可诊断性。
+  - Impact：`backend/app/exchange/grvt_live.py`、`backend/tests/test_grvt_order_size_quantize.py`
+
 - **[2026-02-20] 库存风险分母决策**：库存占比分母采用 `free_usdt * effective_leverage`（默认 50x），并在 `free` 缺失时回退到 `equity-used` 估算。
   - Why：最贴近“实际可用可开名义”口径，解决小本金高杠杆误判。
   - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/exchange/grvt_live.py`
@@ -238,6 +249,9 @@
 
 ## Status / Next
 
+- **[2026-02-20] 当前状态（XRP/SUI 下单量修复 + HYPE 接入）**：已完成 `HYPE_USDT_Perp` 前后端接入、交易对约束解析增强、缺约束阻断下单策略、以及多交易对回归用例；后端测试 `71 passed`，前端构建通过。
+  - Next：部署后观察 `XRP/SUI/HYPE` 各 10-20 分钟，确认日志不再出现持续 `code=2065` 且 `open_orders` 可稳定在簿。
+
 - **[2026-02-20] 当前状态（可用资金口径 + k 自适应）**：已完成可用资金杠杆口径接入、`k` 深度自适应、监控字段与前端卡片展示、资金解析回归测试；后端测试 `64 passed`，前端构建通过。
   - Next：部署后观察 10-20 分钟 `inventory_usage_ratio` 与 `effective_liquidity_k` 曲线，确认单边触发与可用资金变化一致。
 
@@ -291,6 +305,10 @@
   - Next：重部署伦敦机后观察 10-20 分钟，确认日志不再出现 `code=2065` 且 `open_orders` 可稳定在簿；同时核对策略重启后成交量从 0 开始累计。
 
 ## Known Issues
+
+- **[2026-02-20] 约束缺失会阻断下单（预期行为）**：若交易对元数据未返回 `min_size/size_step`，系统将显式报错并停止该轮下单。
+  - Why：避免无效默认步长导致的 `2065` 重复拒单。
+  - Verify：日志应出现 `instrument_constraints_missing`，且不会继续发送被拒订单。
 
 - **[2026-02-20] 可用资金字段来源差异**：不同账户/交易所响应下 `free_usdt` 可能来自 `USDT.free`、`free.USDT` 或 `equity-used` 回退。
   - Why：交易所返回字段存在不一致，已通过 `funds_source` 诊断字段标记来源。

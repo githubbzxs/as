@@ -24,6 +24,10 @@ class InstrumentConstraints:
     base_decimals: int
 
 
+class InstrumentConstraintsError(RuntimeError):
+    """交易对约束缺失或不完整。"""
+
+
 class GrvtLiveAdapter(ExchangeAdapter):
     """基于 grvt-pysdk 的实盘交易适配器。"""
 
@@ -365,13 +369,9 @@ class GrvtLiveAdapter(ExchangeAdapter):
     def _load_instrument_constraints(self, symbol: str) -> InstrumentConstraints:
         instrument = self._fetch_instrument(symbol)
         if instrument is None:
-            self._logger.warning("鏈鍙栧埌浜ゆ槗瀵瑰厓鏁版嵁锛屼娇鐢ㄩ粯璁や笅鍗曟闀?symbol=%s", symbol)
-            return InstrumentConstraints(
-                min_size=0.0,
-                size_step=1e-6,
-                tick_size=0.0,
-                base_decimals=6,
-            )
+            msg = f"instrument_constraints_missing symbol={symbol} reason=instrument-not-found"
+            self._logger.error(msg)
+            raise InstrumentConstraintsError(msg)
         return self._build_instrument_constraints(instrument)
 
     def _fetch_instrument(self, symbol: str) -> dict[str, Any] | None:
@@ -419,16 +419,63 @@ class GrvtLiveAdapter(ExchangeAdapter):
         if not rows:
             return None
 
+        target_base, target_quote = cls._split_symbol_parts(symbol)
         for row in rows:
-            instrument = str(row.get("instrument", "")).strip()
+            instrument = cls._extract_instrument_symbol(row)
             if instrument and cls._symbol_equal(instrument, symbol):
                 return row
+
+        if target_base and target_quote:
+            for row in rows:
+                base = cls._extract_asset_code(
+                    row,
+                    ("base", "base_asset", "base_currency", "underlying", "asset"),
+                )
+                quote = cls._extract_asset_code(
+                    row,
+                    ("quote", "quote_asset", "quote_currency", "settle", "settle_currency"),
+                )
+                if base == target_base and quote == target_quote:
+                    return row
         return rows[0] if len(rows) == 1 else None
 
     def _build_instrument_constraints(self, instrument: dict[str, Any]) -> InstrumentConstraints:
-        min_size = max(0.0, self._decode_fixed(instrument.get("min_size", 0.0)))
-        tick_size = max(0.0, self._decode_fixed(instrument.get("tick_size", 0.0)))
-        base_decimals = max(0, self._safe_int(instrument.get("base_decimals"), 0))
+        info = instrument.get("info") if isinstance(instrument.get("info"), dict) else {}
+        min_size = max(
+            0.0,
+            self._first_positive_number(
+                instrument.get("min_size"),
+                instrument.get("minimum_size"),
+                instrument.get("min_order_size"),
+                instrument.get("min_trade_amount"),
+                info.get("min_size"),
+                info.get("minimum_size"),
+                info.get("min_order_size"),
+                info.get("min_trade_amount"),
+                self._nested_get(instrument, "limits", "amount", "min"),
+                self._nested_get(info, "limits", "amount", "min"),
+            ),
+        )
+        tick_size = max(
+            0.0,
+            self._first_positive_number(
+                instrument.get("tick_size"),
+                instrument.get("price_step"),
+                info.get("tick_size"),
+                info.get("price_step"),
+                info.get("price_increment"),
+                self._nested_get(instrument, "limits", "price", "min"),
+                self._nested_get(instrument, "precision", "price"),
+                self._nested_get(info, "precision", "price"),
+            ),
+        )
+        base_decimals = max(
+            0,
+            self._safe_int(
+                instrument.get("base_decimals", info.get("base_decimals", instrument.get("amount_precision", 0))),
+                0,
+            ),
+        )
 
         size_step = 0.0
         explicit_step_found = False
@@ -440,21 +487,52 @@ class GrvtLiveAdapter(ExchangeAdapter):
             "lot_step",
             "order_size_step",
             "contract_size_step",
+            "qty_step",
+            "amount_step",
+            "size_tick",
+            "min_qty_increment",
+            "order_quantity_increment",
         ):
-            candidate = self._decode_fixed(instrument.get(key, 0.0))
+            candidate = self._first_positive_number(instrument.get(key), info.get(key))
             if candidate > 0:
                 size_step = candidate
                 explicit_step_found = True
                 break
 
+        precision_amount = self._first_positive_number(
+            self._nested_get(instrument, "precision", "amount"),
+            self._nested_get(info, "precision", "amount"),
+            instrument.get("amount_precision"),
+            info.get("amount_precision"),
+        )
+        if size_step <= 0 and precision_amount > 0:
+            if precision_amount < 1.0:
+                size_step = precision_amount
+            else:
+                precision_int = int(precision_amount)
+                if abs(precision_amount - float(precision_int)) < 1e-12 and precision_int <= 18:
+                    size_step = 10 ** (-precision_int)
+                else:
+                    size_step = precision_amount
+
+        if base_decimals <= 0 and precision_amount >= 1.0:
+            precision_int = int(precision_amount)
+            if abs(precision_amount - float(precision_int)) < 1e-12 and precision_int <= 18:
+                base_decimals = precision_int
         if size_step <= 0 and base_decimals > 0:
             size_step = 10 ** (-base_decimals)
         if size_step <= 0 and min_size > 0:
             size_step = self._infer_decimal_step(min_size)
-        if size_step <= 0:
-            size_step = 1e-6
         if min_size > 0 and not explicit_step_found:
             size_step = max(size_step, self._infer_decimal_step(min_size))
+        if base_decimals <= 0 and size_step > 0:
+            base_decimals = max(0, -Decimal(str(size_step)).normalize().as_tuple().exponent)
+
+        if min_size <= 0 or size_step <= 0:
+            raise InstrumentConstraintsError(
+                "instrument_constraints_missing"
+                f" min_size={min_size} size_step={size_step} instrument={self._extract_instrument_symbol(instrument)}"
+            )
 
         return InstrumentConstraints(
             min_size=min_size,
@@ -482,7 +560,9 @@ class GrvtLiveAdapter(ExchangeAdapter):
 
     @staticmethod
     def _infer_decimal_step(value: float) -> float:
-        dec = Decimal(str(abs(float(value))))
+        dec = Decimal(str(abs(float(value)))).normalize()
+        if dec == dec.to_integral_value():
+            return 1.0
         exponent = dec.as_tuple().exponent
         if exponent >= 0:
             return 1.0
@@ -494,6 +574,62 @@ class GrvtLiveAdapter(ExchangeAdapter):
             return int(value)
         except Exception:
             return default
+
+    @classmethod
+    def _split_symbol_parts(cls, symbol: str) -> tuple[str, str]:
+        normalized = cls._normalize_symbol(symbol)
+        parts = normalized.split("_")
+        if len(parts) >= 2:
+            return parts[0].upper(), parts[1].upper()
+        return "", ""
+
+    @classmethod
+    def _extract_instrument_symbol(cls, row: dict[str, Any]) -> str:
+        for key in ("instrument", "symbol", "id", "name", "market"):
+            value = row.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        info = row.get("info")
+        if isinstance(info, dict):
+            for key in ("instrument", "symbol", "id", "name", "market", "instrument_name"):
+                value = info.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        return ""
+
+    @classmethod
+    def _extract_asset_code(cls, row: dict[str, Any], keys: tuple[str, ...]) -> str:
+        for key in keys:
+            value = row.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip().upper()
+        info = row.get("info")
+        if isinstance(info, dict):
+            for key in keys:
+                value = info.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip().upper()
+        return ""
+
+    @staticmethod
+    def _nested_get(payload: dict[str, Any], *keys: str) -> Any:
+        current: Any = payload
+        for key in keys:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+            if current is None:
+                return None
+        return current
+
+    def _first_positive_number(self, *values: Any) -> float:
+        for value in values:
+            if value is None:
+                continue
+            candidate = self._decode_fixed(value)
+            if candidate > 0:
+                return candidate
+        return 0.0
 
     def _extract_usdt_from_map(self, payload: Any) -> float | None:
         if not isinstance(payload, dict):

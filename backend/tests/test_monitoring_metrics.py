@@ -83,3 +83,40 @@ def test_monitoring_dedup_trade_by_trade_id():
     monitor.update_tick(_build_tick(now, pnl_total=1.0, pnl_daily=1.0), drawdown_pct=0.1, mode="running", consecutive_failures=0)
 
     assert monitor.summary.total_trade_count == 1
+
+
+def test_monitoring_ignores_trades_before_session_start():
+    now = utcnow()
+    session_start = now
+    monitor = MonitoringService(max_points=100)
+    monitor.reset_session(started_at=session_start)
+
+    trades = [
+        TradeSnapshot(
+            trade_id="old",
+            side="buy",
+            price=100.0,
+            size=0.3,
+            fee=-0.02,
+            created_at=session_start - timedelta(seconds=10),
+        ),
+        TradeSnapshot(
+            trade_id="new",
+            side="sell",
+            price=101.0,
+            size=0.4,
+            fee=0.03,
+            created_at=session_start + timedelta(seconds=1),
+        ),
+    ]
+    monitor.update_trades(trades)
+    monitor.update_tick(
+        _build_tick(session_start + timedelta(seconds=2), pnl_total=1.0, pnl_daily=1.0),
+        drawdown_pct=0.1,
+        mode="running",
+        consecutive_failures=0,
+    )
+
+    assert monitor.summary.total_trade_count == 1
+    assert monitor.summary.total_trade_volume_notional == abs(101.0 * 0.4)
+    assert monitor.summary.total_fee == 0.03
