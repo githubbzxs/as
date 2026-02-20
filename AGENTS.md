@@ -22,6 +22,15 @@
 
 ## Facts
 
+- **[2026-02-20] 监控指标精简（按产品口径）**：`MetricsSummary` 与前端卡片已移除 `free_usdt`、`inventory_usage_ratio`，仅保留权益与库存名义等核心展示。
+  - Impact：`backend/app/schemas.py`、`backend/app/services/monitoring.py`、`frontend/src/App.jsx`、`backend/tests/test_monitoring_metrics.py`
+
+- **[2026-02-20] 成交执行参数回归“激进成交优先”**：`strategy -> runtime` 映射固定注入成交优先参数（更窄价差、更快重挂、更短 TTL）。
+  - Impact：`backend/app/services/strategy_mapper.py`、`backend/app/schemas.py`、`backend/tests/test_strategy_mapper.py`
+
+- **[2026-02-20] taker 平仓链路补齐量化与残量处理**：平仓下单改为按交易对步长量化（reduce-only 向下量化），并在低于最小平仓量时抛出残量异常供引擎终止重试。
+  - Impact：`backend/app/exchange/base.py`、`backend/app/exchange/grvt_live.py`、`backend/app/engine/strategy_engine.py`、`backend/tests/test_grvt_order_size_quantize.py`、`backend/tests/test_strategy_engine_close.py`
+
 - **[2026-02-20] HYPE 交易对接入**：策略配置与前端交易对选项新增 `HYPE_USDT_Perp`，与现有 `BNB/XRP/SUI` 同口径管理。
   - Impact：`backend/app/schemas.py`、`frontend/src/App.jsx`、`backend/tests/test_goal_api.py`、`backend/tests/test_strategy_mapper.py`、`backend/tests/test_runtime_config.py`
 
@@ -164,6 +173,14 @@
 
 ## Decisions
 
+- **[2026-02-20] 平仓残量终止决策**：`stop/halt` 平仓阶段若命中 `PositionDustError`（仓位小于交易所最小可平量），引擎不再无限重试，改为发布 `close_done(dust=true)` 并告警标记。
+  - Why：避免“仓位已是残量却永久重试”的假死状态，确保停止流程可完成。
+  - Impact：`backend/app/engine/strategy_engine.py`、`backend/app/exchange/base.py`、`backend/app/exchange/grvt_live.py`
+
+- **[2026-02-20] 成交提速参数收敛决策**：策略配置写入运行参数时统一覆盖为成交优先执行窗口（`min_spread/max_spread/requote/ttl/interval`）。
+  - Why：修复“长期不改单、成交慢”的执行层保守漂移。
+  - Impact：`backend/app/services/strategy_mapper.py`、`backend/app/schemas.py`
+
 - **[2026-02-20] 交易对约束缺失策略**：当 `min_size/size_step` 无法可靠解析时，适配器改为阻断下单并抛出明确错误，不再回退默认步长下单。
   - Why：优先避免重复触发 `2065` 粒度拒单风暴，提升故障可诊断性。
   - Impact：`backend/app/exchange/grvt_live.py`、`backend/tests/test_grvt_order_size_quantize.py`
@@ -249,6 +266,9 @@
 
 ## Status / Next
 
+- **[2026-02-20] 当前状态（成交提速 + 平仓闭环修复）**：已完成监控字段精简、成交优先参数收敛、taker 平仓量化与残量终止分支，后端测试 `74 passed`，前端构建通过。
+  - Next：部署伦敦机后观察 10-20 分钟：`requote_reason` 不再长期 `none`、成交笔数提升、`stop/halt` 不再出现无限平仓重试。
+
 - **[2026-02-20] 当前状态（XRP/SUI 下单量修复 + HYPE 接入）**：已完成 `HYPE_USDT_Perp` 前后端接入、交易对约束解析增强、缺约束阻断下单策略、以及多交易对回归用例；后端测试 `71 passed`，前端构建通过。
   - Next：部署后观察 `XRP/SUI/HYPE` 各 10-20 分钟，确认日志不再出现持续 `code=2065` 且 `open_orders` 可稳定在簿。
 
@@ -305,6 +325,10 @@
   - Next：重部署伦敦机后观察 10-20 分钟，确认日志不再出现 `code=2065` 且 `open_orders` 可稳定在簿；同时核对策略重启后成交量从 0 开始累计。
 
 ## Known Issues
+
+- **[2026-02-20] 残量终止为预期保护行为**：当净仓低于交易所 `min_close_size` 时会触发 `POSITION_FLAT_DUST` 并结束平仓重试，可能仍看到极小残仓显示。
+  - Why：交易所最小成交量约束导致残量不可撮合，继续重试无意义。
+  - Verify：停止时若出现 `close_done` 且 `dust=true`，同时告警 `POSITION_FLAT_DUST`，即表示命中该保护分支。
 
 - **[2026-02-20] 约束缺失会阻断下单（预期行为）**：若交易对元数据未返回 `min_size/size_step`，系统将显式报错并停止该轮下单。
   - Why：避免无效默认步长导致的 `2065` 重复拒单。
